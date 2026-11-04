@@ -39,7 +39,28 @@
 <!-- The path a submission takes, from arriving to the label a reader sees.
      Six or seven steps — this is the trace you wrote in Milestone 1. -->
 
+1. A writing site sends `POST /submit` with `text` and `creator_id` as JSON.
+2. The route validates the body — missing/empty `text`, missing `creator_id`,
+   or `text` over 20,000 characters all return a `400` before any signal runs.
+3. A `content_id` (UUID) is generated for the submission.
+4. Three signals score the text independently, each 0.0–1.0, higher = more
+   likely AI: `detector.model_signal` (a local language model's perplexity),
+   `stylometry.style_signal` (sentence-length spread, vocabulary variety,
+   punctuation density), and `lexical.lexical_signal` (stretch — distance from
+   a generic function-word/word-length center).
+5. `scoring.combine_signals` weights and averages the three into one score.
+6. `scoring.score_to_label` maps that score to a guess (`ai`/`human`/`unsure`)
+   and the full-sentence label text a reader sees. If the `creator_id` holds a
+   verified-human credential (stretch, via `POST /verify`), a line is appended
+   noting that.
+7. The decision — both raw signal scores, the combined score, the guess, and
+   the label — is written to `logs/audit.jsonl` through `audit.log_decision`.
+8. The response carries the `content_id`, guess, confidence, label, and all
+   three signal scores back to the caller.
 
+A writer who disagrees sends `POST /appeal` with that `content_id` and their
+reasoning. The route confirms the id exists, appends an appeal entry that
+moves `status` to `under_review`, and confirms — no automatic re-checking.
 
 ---
 
@@ -53,37 +74,77 @@
 
 ### Signal one — the model signal
 
-**What it measures:**
+**What it measures:** Perplexity — how predictable the text is to a local
+GPT-2 model. Low perplexity (the model isn't surprised) scores high on the
+AI scale.
 
-**Why that might differ between human and AI writing:**
+**Why that might differ between human and AI writing:** A language model
+writes by repeatedly picking a likely next word, so its output tends to be
+text that a model finds easy to predict. Human writing wanders more — odd
+word choices, abrupt turns, the specific instead of the typical.
 
-**What it can't see:**
+**What it can't see:** The difference between "predictable because an AI
+wrote it" and "predictable because a person wrote plainly on purpose." Second-
+language writers, younger writers, and anyone writing in short common words
+score as machine-like as actual machine writing does on this signal alone.
 
 ### Signal two — the style signal
 
-**What it measures:**
+**What it measures:** The text's shape, not its meaning — sentence-length
+spread (coefficient of variation), vocabulary variety (type-token ratio), and
+punctuation density (`;`, `:`, em/en dash per word).
 
-**Why that might differ between human and AI writing:**
+**Why that might differ between human and AI writing:** Generated prose tends
+toward even, mid-length sentences and a narrower vocabulary band, because
+that's what "most likely next word" produces on average. Human writing is
+lumpier — a three-word sentence next to a forty-word one, bursts of varied
+punctuation.
 
-**What it can't see:**
+**What it can't see:** The text's content at all. Anything that changes the
+shape without changing the substance moves this signal — typos, broken-up
+sentences, a pasted quotation — which is a cheap thing to do on purpose.
+
+### Signal three — the lexical signal (stretch)
+
+**What it measures:** How close the text sits to a generic center of ordinary
+English on two measures — function-word ratio and average word length.
+
+**Why that might differ between human and AI writing:** A model trained to
+predict the next likely word tends to land near the population average on
+both; a specific human voice tends to sit off-center in one direction.
+
+**What it can't see:** Whether the text makes sense. It only measures
+distance from average, so ordinary human writing scores the same as text
+that's ordinary because a model produced it — the same blind spot as signal
+one, for a different reason.
 
 ### The combining rule
 
-<!-- Write the rule in words, then give the numbers. What happens when the two
-     signals disagree? -->
+**The rule:** A weighted average, not a veto. When two signals disagree (one
+high, one low), the average pulls the combined score toward 0.5 — "unsure" —
+on purpose, because two different methods disagreeing about a text *is*
+uncertainty, and "unsure" is the label that costs a writer nothing: it isn't
+an accusation and it isn't a clearance, it just says a person should look.
 
-**The rule:**
-
-**The numbers:**
+**The numbers:** `model_score * 0.45 + style_score * 0.35 + lexical_score *
+0.20`. The model signal carries the most weight because it reads for meaning.
+The style signal is next because it's cheaper to fool than signal one but
+harder than signal three. The lexical signal is weighted lowest because a
+handful of deliberately chosen words move it without touching the sentence
+structure underneath — it should nudge the score when the other two split,
+not dominate it.
 
 **Where it lives:** `scoring.py::combine_signals`
 
-<!-- ⚠️ The grader checks your code against that line. If your rule lives
-     somewhere else, say where. -->
-
-**A case where my two signals split, and what my rule does with it:**
-
-
+**A case where my two signals split, and what my rule does with it:** A
+short, plainly-worded human paragraph scored high on the model signal (0.89 —
+plain writing is predictable) but noticeably lower on the style signal (0.67 —
+real sentence-length variation and distinct punctuation). The weighted average
+(0.79, with the lexical signal added in) still crossed into `ai` here, which
+is an honest limitation of a 0.45-weighted model signal on short, plain text —
+see **What's Still Broken** territory for unit 8. On a case with less extreme
+model-signal input, the same split pulls the result down into `unsure` rather
+than `ai`, which is the behavior the rule is designed for.
 
 ---
 
@@ -96,16 +157,43 @@
 
 | Label | Score range | The exact text a reader sees |
 |---|---|---|
-| high-confidence human |  |  |
-| unsure |  |  |
-| high-confidence AI |  |  |
+| high-confidence human | 0.00 – 0.35 | "This looks like it was written by a person." |
+| unsure | 0.35 – 0.65 | "We can't tell confidently whether a person or an AI wrote this. That's not a strike against you — if you wrote it yourself, you're welcome to appeal so a person can take a closer look." |
+| high-confidence AI | 0.65 – 1.00 | "This looks like it was written by an AI system, not a person. If you wrote this yourself, you can appeal and a person will take a closer look." |
+
+A verified-human credential (stretch — see **Stretch Features** below) appends
+one more sentence to any of the three: *"This writer holds a verified-human
+credential."*
 
 **Why I worded the "unsure" one this way:**
-<!-- It's the hardest of the three. It has to admit uncertainty without
-     sounding like an accusation, because the person reading it may well have
-     written every word themselves. -->
 
+The first draft read "We're not confident about this one" — accurate, but it
+puts the whole burden of guessing what that means on the writer. The final
+version says explicitly that it isn't an accusation and names the one thing
+the writer can actually do next: appeal. "Confidently" is the one word doing
+the most work — it says the uncertainty is the system's, not a soft way of
+calling the writing suspicious.
 
+---
+
+## Stretch Features
+
+Three stretch features, all built:
+
+1. **A third signal** — `lexical.py`, documented above under "Signal three."
+   Weighted 0.20 in `scoring.combine_signals`, lowest of the three, with the
+   weighting reasoning under **The combining rule**.
+2. **`GET /content/<id>`** — returns one item's current `status` and its full
+   history (the original decision plus any appeal), read straight off
+   `audit.entries_for`.
+3. **A verified-human path** — `POST /verify` with `{"creator_id", "attestation"}`.
+   The attestation has to match the phrase `"I wrote this myself"` exactly
+   (`credential.ATTESTATION_PHRASE`). This is not identity verification — it's
+   deliberate friction: trivial for a genuine writer to clear once, and
+   recorded in `logs/verified.json` so it persists across submissions. Once
+   granted, every `/submit` from that `creator_id` carries `verified_human:
+   true` in the response and log entry, and the label gets one appended
+   sentence saying so.
 
 ---
 
@@ -124,11 +212,20 @@
 ```bash
 $ curl -X POST http://127.0.0.1:5000/submit \
   -H "Content-Type: application/json" \
-  -d '{"text": "...", "creator_id": "..."}'
+  -d '{"text": "The implementation of the proposed framework requires careful consideration of several key factors. First, it is important to note that the system must be able to handle a wide variety of different inputs. Additionally, the overall performance of the solution depends on a number of important variables.", "creator_id": "demo-writer-1"}'
 ```
 
 ```json
-
+{
+  "confidence": 0.7892,
+  "content_id": "2d3c3955-f5d2-4107-9833-04ddc1974232",
+  "guess": "ai",
+  "label": "This looks like it was written by an AI system, not a person. If you wrote this yourself, you can appeal and a person will take a closer look.",
+  "lexical_score": 0.7728,
+  "model_score": 0.8864,
+  "style_score": 0.6736,
+  "verified_human": false
+}
 ```
 
 **An appeal**
@@ -136,11 +233,24 @@ $ curl -X POST http://127.0.0.1:5000/submit \
 ```bash
 $ curl -X POST http://127.0.0.1:5000/appeal \
   -H "Content-Type: application/json" \
-  -d '{"content_id": "...", "reasoning": "..."}'
+  -d '{"content_id": "2d3c3955-f5d2-4107-9833-04ddc1974232", "reasoning": "I wrote this paragraph myself for a class assignment; it just happens to read formally."}'
 ```
 
 ```json
-
+{
+  "content_id": "2d3c3955-f5d2-4107-9833-04ddc1974232",
+  "entry": {
+    "content_id": "2d3c3955-f5d2-4107-9833-04ddc1974232",
+    "creator_id": "demo-writer-1",
+    "event": "appeal",
+    "reasoning": "I wrote this paragraph myself for a class assignment; it just happens to read formally.",
+    "status": "under_review",
+    "timestamp": "2026-11-04T07:14:26+00:00"
+  },
+  "message": "Appeal recorded. A person will review this submission.",
+  "ok": true,
+  "status": "under_review"
+}
 ```
 
 **What the log shows afterwards**
@@ -150,7 +260,32 @@ $ curl "http://127.0.0.1:5000/log?limit=3"
 ```
 
 ```json
-
+{
+  "count": 2,
+  "entries": [
+    {
+      "combined_score": 0.7892,
+      "content_id": "2d3c3955-f5d2-4107-9833-04ddc1974232",
+      "creator_id": "demo-writer-1",
+      "guess": "ai",
+      "label": "This looks like it was written by an AI system, not a person. If you wrote this yourself, you can appeal and a person will take a closer look.",
+      "lexical_score": 0.7728,
+      "model_score": 0.8864,
+      "status": "decided",
+      "style_score": 0.6736,
+      "timestamp": "2026-11-04T07:14:26+00:00",
+      "verified_human": false
+    },
+    {
+      "content_id": "2d3c3955-f5d2-4107-9833-04ddc1974232",
+      "creator_id": "demo-writer-1",
+      "event": "appeal",
+      "reasoning": "I wrote this paragraph myself for a class assignment; it just happens to read formally.",
+      "status": "under_review",
+      "timestamp": "2026-11-04T07:14:26+00:00"
+    }
+  ]
+}
 ```
 
 ---
@@ -159,15 +294,27 @@ $ curl "http://127.0.0.1:5000/log?limit=3"
 
 **Moment 1**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- *What I asked for:* A combining rule for `scoring.py::combine_signals` that
+  handles signal disagreement sensibly, with the weights justified.
+- *What came back:* A weighted average (0.45/0.35/0.20 model/style/lexical)
+  with reasoning for the weight ordering and a note on what happens when
+  signals split.
+- *What I changed:* Kept the weighted-average approach and the 0.45/0.35/0.20
+  split, but added the two-signal fallback path (renormalizing weights when
+  the lexical score is omitted) so `combine_signals` still works for a caller
+  that only has the two required signals, not just the three-signal stretch
+  case.
 
 **Moment 2**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- *What I asked for:* Label text for the "unsure" case that a non-technical
+  reader wouldn't read as an accusation.
+- *What came back:* A first draft that said "We're not confident about this
+  one," then a second pass naming the appeal path explicitly after being
+  asked to imagine the writer's reaction to that sentence alone.
+- *What I changed:* Added the opening clause "That's not a strike against
+  you" before the appeal mention, so the label leads with reassurance rather
+  than making the writer find it after an uncertain-sounding first sentence.
 
 <!-- ═══════════════════════ UNIT 8 — THE TEST ═══════════════════════ -->
 
