@@ -30,6 +30,13 @@ from flask import Flask, jsonify, request
 
 import audit
 import config
+import credential
+import detector
+import lexical
+import scoring
+import stylometry
+
+MAX_TEXT_CHARS = 20000
 
 app = Flask(__name__)
 
@@ -199,17 +206,76 @@ def submit():
     what should this do when `text` is missing, empty, or enormous? A crash on
     a malformed input is one of the most common real failures there is.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({
+            "error": "bad_request",
+            "message": "Request body must be a JSON object.",
+        }), 400
 
-    # TODO: delete this and build the route.
+    text = payload.get("text")
+    creator_id = payload.get("creator_id")
+
+    if not isinstance(text, str) or not text.strip():
+        return jsonify({
+            "error": "bad_request",
+            "message": "'text' is required and must be a non-empty string.",
+        }), 400
+
+    if not isinstance(creator_id, str) or not creator_id.strip():
+        return jsonify({
+            "error": "bad_request",
+            "message": "'creator_id' is required and must be a non-empty string.",
+        }), 400
+
+    if len(text) > MAX_TEXT_CHARS:
+        return jsonify({
+            "error": "bad_request",
+            "message": f"'text' exceeds the {MAX_TEXT_CHARS}-character limit.",
+        }), 400
+
+    content_id = str(uuid.uuid4())
+
+    try:
+        model_score = detector.model_signal(text)
+    except detector.DetectorUnavailable as exc:
+        return jsonify({"error": "detector_unavailable", "message": str(exc)}), 503
+    except ValueError as exc:
+        return jsonify({"error": "bad_request", "message": str(exc)}), 400
+
+    style_score = stylometry.style_signal(text)
+    lexical_score = lexical.lexical_signal(text)
+
+    combined_score = scoring.combine_signals(model_score, style_score, lexical_score)
+    guess, label = scoring.score_to_label(combined_score)
+
+    verified_human = credential.is_verified(creator_id)
+    if verified_human:
+        label = f"{label} This writer holds a verified-human credential."
+
+    audit.log_decision(
+        content_id=content_id,
+        creator_id=creator_id,
+        guess=guess,
+        model_score=model_score,
+        style_score=style_score,
+        combined_score=combined_score,
+        label=label,
+        status="decided",
+        lexical_score=lexical_score,
+        verified_human=verified_human,
+    )
+
     return jsonify({
-        "error": "not_implemented",
-        "message": "POST /submit isn't built yet — see the TODO in app.py.",
-        "you_sent": {
-            "text_length": len(payload.get("text", "")),
-            "creator_id": payload.get("creator_id"),
-        },
-    }), 501
+        "content_id": content_id,
+        "guess": guess,
+        "confidence": combined_score,
+        "label": label,
+        "model_score": model_score,
+        "style_score": style_score,
+        "lexical_score": lexical_score,
+        "verified_human": verified_human,
+    })
 
 
 @app.post("/appeal")
@@ -232,14 +298,109 @@ def appeal():
     to the person on the other end. It's the only thing standing between a
     wrong accusation and nothing at all.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({
+            "error": "bad_request",
+            "message": "Request body must be a JSON object.",
+        }), 400
 
-    # TODO: delete this and build the route.
+    content_id = payload.get("content_id")
+    reasoning = payload.get("reasoning")
+
+    if not isinstance(content_id, str) or not content_id.strip():
+        return jsonify({
+            "error": "bad_request",
+            "message": "'content_id' is required and must be a non-empty string.",
+        }), 400
+
+    if not isinstance(reasoning, str) or not reasoning.strip():
+        return jsonify({
+            "error": "bad_request",
+            "message": "'reasoning' is required and must be a non-empty string.",
+        }), 400
+
+    prior = audit.entries_for(content_id)
+    if not prior:
+        return jsonify({
+            "error": "not_found",
+            "message": f"No submission found for content_id '{content_id}'.",
+        }), 404
+
+    creator_id = prior[0].get("creator_id", "unknown")
+    entry = audit.log_appeal(content_id=content_id, creator_id=creator_id, reasoning=reasoning)
+
     return jsonify({
-        "error": "not_implemented",
-        "message": "POST /appeal isn't built yet — see the TODO in app.py.",
-        "you_sent": payload,
-    }), 501
+        "ok": True,
+        "content_id": content_id,
+        "status": "under_review",
+        "message": "Appeal recorded. A person will review this submission.",
+        "entry": entry,
+    })
+
+
+# ── Stretch ──────────────────────────────────────────────────────────────────
+
+@app.get("/content/<content_id>")
+def content_status(content_id):
+    """
+    Stretch: one item's current status.
+
+        curl http://127.0.0.1:5000/content/<content_id>
+
+    Reads straight off the audit log — the decision entry plus any appeal
+    that followed, oldest first, with the latest status surfaced at the top
+    level so a caller doesn't have to know the log's shape.
+    """
+    entries = audit.entries_for(content_id)
+    if not entries:
+        return jsonify({
+            "error": "not_found",
+            "message": f"No record for content_id '{content_id}'.",
+        }), 404
+
+    return jsonify({
+        "content_id": content_id,
+        "status": entries[-1].get("status"),
+        "history": entries,
+    })
+
+
+@app.post("/verify")
+def verify():
+    """
+    Stretch: earn the verified-human credential.
+
+    Takes JSON: {"creator_id": "...", "attestation": "..."}. The attestation
+    has to match `credential.ATTESTATION_PHRASE` exactly. That's the "extra
+    step" — not identity proof, just deliberate friction a script has to pay
+    too. Once granted it's checked on every `/submit` from that creator_id and
+    shown on the label.
+    """
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({
+            "error": "bad_request",
+            "message": "Request body must be a JSON object.",
+        }), 400
+
+    creator_id = payload.get("creator_id")
+    attestation = payload.get("attestation")
+
+    if not isinstance(creator_id, str) or not creator_id.strip():
+        return jsonify({
+            "error": "bad_request",
+            "message": "'creator_id' is required and must be a non-empty string.",
+        }), 400
+
+    if attestation != credential.ATTESTATION_PHRASE:
+        return jsonify({
+            "error": "attestation_mismatch",
+            "message": f"'attestation' must be exactly: \"{credential.ATTESTATION_PHRASE}\"",
+        }), 400
+
+    credential.grant(creator_id)
+    return jsonify({"ok": True, "creator_id": creator_id, "verified_human": True})
 
 
 # ── Already works ─────────────────────────────────────────────────────────────
