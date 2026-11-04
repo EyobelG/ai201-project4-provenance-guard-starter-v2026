@@ -64,8 +64,14 @@ def sentence_length_spread(text: str) -> float:
     `stdev` raises on fewer than two values. Decide what that should return
     before the attack set decides for you.
     """
-    # TODO: replace this
-    return 0.0
+    lengths = [len(words(s)) for s in sentences(text)]
+    lengths = [n for n in lengths if n > 0]
+    if len(lengths) < 2:
+        return 0.0
+    mean = statistics.mean(lengths)
+    if mean == 0:
+        return 0.0
+    return statistics.stdev(lengths) / mean
 
 
 def type_token_ratio(text: str) -> float:
@@ -80,8 +86,10 @@ def type_token_ratio(text: str) -> float:
     directly comparable on it, and if your test inputs vary a lot in length,
     that alone can look like a signal.
     """
-    # TODO: replace this
-    return 0.0
+    w = words(text)
+    if not w:
+        return 0.0
+    return len(set(w)) / len(w)
 
 
 def punctuation_density(text: str) -> float:
@@ -94,8 +102,11 @@ def punctuation_density(text: str) -> float:
         more interesting than full stops, because they vary more between
         writers.
     """
-    # TODO: replace this
-    return 0.0
+    if not text.strip():
+        return 0.0
+    marks = re.findall(r"[;:—–]", text)
+    word_count = max(len(words(text)), 1)
+    return len(marks) / word_count
 
 
 # ── Combining them ───────────────────────────────────────────────────────────
@@ -121,9 +132,37 @@ def style_signal(text: str) -> float:
     clearly human, plain conventional human writing, lightly-edited AI — before
     you trust it. Plain and ordinary, not formal: formal prose reads as *human*
     to signal one, and it is plain writing that gets accused.
+
+    The combining rule, decided and written down here:
+
+      - `sentence_length_spread`: a coefficient of variation. Low spread is
+        AI-ish (even, metronomic sentences), so it's flipped and clamped —
+        a CV of 1.0 or higher counts as maximally human-like variety.
+      - `type_token_ratio`: already 0–1 and already points the right way
+        (higher = more varied = more human), so it's flipped once to turn it
+        into an AI-likeness score.
+      - `punctuation_density`: counts of `;`, `:`, em dash and en dash per
+        word. Higher is more human (a distinct, varied voice), so it's
+        flipped too. 0.05 marks per word (1 per 20 words) is treated as the
+        human-like ceiling.
+
+    Weighted 0.4 / 0.3 / 0.3 toward spread, vocabulary, punctuation — spread
+    weighted highest because it's the cheapest thing for an AI generator to
+    get wrong and the hardest for a light edit to fix.
     """
-    # TODO: replace this
-    return 0.5
+    spread = sentence_length_spread(text)
+    ttr = type_token_ratio(text)
+    density = punctuation_density(text)
+
+    spread_norm = min(spread / 1.0, 1.0)
+    density_norm = min(density / 0.05, 1.0)
+
+    ai_from_spread = 1.0 - spread_norm
+    ai_from_ttr = 1.0 - ttr
+    ai_from_density = 1.0 - density_norm
+
+    score = 0.4 * ai_from_spread + 0.3 * ai_from_ttr + 0.3 * ai_from_density
+    return round(min(max(score, 0.0), 1.0), 4)
 
 
 if __name__ == "__main__":
