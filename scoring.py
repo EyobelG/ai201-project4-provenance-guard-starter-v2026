@@ -19,44 +19,66 @@ you claim, so that line should read `scoring.py::combine_signals`.
 import config
 
 
-def combine_signals(model_score: float, style_score: float) -> float:
+def combine_signals(
+    model_score: float, style_score: float, lexical_score: float | None = None
+) -> float:
     """
-    Combine two 0–1 signals into one 0–1 score. ← TODO (Milestone 4)
+    Combine the signals into one 0–1 score. (Milestone 4; stretch adds a third.)
 
-    Both inputs point the same way: higher means more likely AI. Your output
-    should too.
+    All inputs point the same way: higher means more likely AI. The output
+    does too.
 
     Args:
         model_score: from `detector.model_signal` — how predictable the text is.
         style_score: from `stylometry.style_signal` — the shape of the text.
+        lexical_score: from `lexical.lexical_signal` (stretch) — how close the
+            text sits to a generic center. Optional: if omitted, the model and
+            style weights are renormalized to split the full 1.0 between them,
+            so this function still behaves for a two-signal caller.
 
     Returns:
         A float from 0.0 (confidently human) to 1.0 (confidently AI).
 
-    ⚠️ **Write the rule down before you code it, and put the numbers in your
-    README.** A weighted average is the obvious choice and it is not the only
-    one. Things worth thinking about:
+    The rule, decided before this was coded:
 
-      - **What happens when they disagree?** One signal at 0.9 and the other at
-        0.1 averages to 0.5 — "unsure". Is that what you want? It might be
-        exactly right: two methods disagreeing IS uncertainty. Or you might
-        decide one signal is more trustworthy when they split.
+      - **Weighted average, not a veto rule.** Two signals disagreeing (one at
+        0.9, one at 0.1) lands near 0.5 — "unsure" — on purpose. Two different
+        methods disagreeing about a piece of text *is* uncertainty, and
+        "unsure" is the one label that costs a writer nothing: it isn't an
+        accusation, and it isn't cleared either. It just says a person should
+        look, which is the honest answer when the evidence splits.
+      - **Weights are 0.45 model / 0.35 style / 0.20 lexical** (config.py).
+        The model signal reads for meaning, so it carries the most weight.
+        The style signal gets the next-most because it's cheaper to fool than
+        the model signal but harder to fool than the lexical one. The lexical
+        signal is weighted lowest because a few deliberately chosen words
+        move it without touching the sentence structure underneath — it adds
+        information when the other two split, but it shouldn't dominate.
+      - **Which way the weighting leans:** heavier weight on the model signal
+        means a text that reads as human to signal one pulls the combined
+        score down even if the style signal leans AI — fewer false
+        accusations, at the cost of letting more AI text read as "unsure"
+        instead of flagged. That's the deliberate trade from criteria.md #1.
 
-      - **Which way do you want to be wrong?** Weighting toward the signal that
-        reads more human means fewer false accusations and more AI text
-        getting through. There's no weighting that avoids the trade.
-
-      - Milestone 4 asks you to find a case where your two signals split and
-        write it down. That case is what this rule exists to handle.
-
-    The weights in config.py are placeholders. Change them, or ignore them and
-    write a different rule.
+    A case where my signals split: a short, plainly-worded paragraph I wrote
+    myself scored high on the model signal (low perplexity — plain writing is
+    predictable) but low on the style signal (real variation in sentence
+    length). The weighted average pulled it down into "unsure" rather than
+    "ai" — which is what this rule is for.
     """
-    # TODO: replace this
-    return (
-        config.WEIGHT_MODEL_SIGNAL * model_score
-        + config.WEIGHT_STYLE_SIGNAL * style_score
-    )
+    if lexical_score is None:
+        total = config.WEIGHT_MODEL_SIGNAL + config.WEIGHT_STYLE_SIGNAL
+        combined = (
+            (config.WEIGHT_MODEL_SIGNAL / total) * model_score
+            + (config.WEIGHT_STYLE_SIGNAL / total) * style_score
+        )
+    else:
+        combined = (
+            config.WEIGHT_MODEL_SIGNAL * model_score
+            + config.WEIGHT_STYLE_SIGNAL * style_score
+            + config.WEIGHT_LEXICAL_SIGNAL * lexical_score
+        )
+    return round(min(max(combined, 0.0), 1.0), 4)
 
 
 def score_to_label(score: float) -> tuple[str, str]:
@@ -85,12 +107,19 @@ def score_to_label(score: float) -> tuple[str, str]:
     think if they got it on their own work. That question is the whole
     milestone.
     """
-    # TODO: replace this — thresholds are in config.py
     if score >= config.AI_THRESHOLD:
-        return "ai", "PLACEHOLDER — write the high-confidence AI label."
+        return "ai", (
+            "This looks like it was written by an AI system, not a person. "
+            "If you wrote this yourself, you can appeal and a person will "
+            "take a closer look."
+        )
     if score <= config.HUMAN_THRESHOLD:
-        return "human", "PLACEHOLDER — write the high-confidence human label."
-    return "unsure", "PLACEHOLDER — write the unsure label."
+        return "human", "This looks like it was written by a person."
+    return "unsure", (
+        "We can't tell confidently whether a person or an AI wrote this. "
+        "That's not a strike against you — if you wrote it yourself, you're "
+        "welcome to appeal so a person can take a closer look."
+    )
 
 
 def label_ranges() -> list[tuple[str, str]]:
