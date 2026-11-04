@@ -33,6 +33,8 @@ anything together:
 import re
 import statistics
 
+import config
+
 
 def sentences(text: str) -> list[str]:
     """Split into sentences. Rough and good enough — given to you."""
@@ -154,14 +156,18 @@ def style_signal(text: str) -> float:
     ttr = type_token_ratio(text)
     density = punctuation_density(text)
 
-    spread_norm = min(spread / 1.0, 1.0)
-    density_norm = min(density / 0.05, 1.0)
+    spread_norm = min(spread / config.STYLE_SPREAD_CV_CEILING, 1.0)
+    density_norm = min(density / config.STYLE_PUNCTUATION_DENSITY_CEILING, 1.0)
 
     ai_from_spread = 1.0 - spread_norm
     ai_from_ttr = 1.0 - ttr
     ai_from_density = 1.0 - density_norm
 
-    score = 0.4 * ai_from_spread + 0.3 * ai_from_ttr + 0.3 * ai_from_density
+    score = (
+        config.STYLE_WEIGHT_SPREAD * ai_from_spread
+        + config.STYLE_WEIGHT_TTR * ai_from_ttr
+        + config.STYLE_WEIGHT_PUNCTUATION * ai_from_density
+    )
     return round(min(max(score, 0.0), 1.0), 4)
 
 

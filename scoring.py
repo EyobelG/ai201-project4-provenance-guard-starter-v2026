@@ -126,9 +126,15 @@ def label_ranges() -> list[tuple[str, str]]:
     """
     The score range each label covers. Your README needs these beside the
     label text — given to you so the numbers can't drift apart from config.py.
+
+    Boundaries are inclusive on the side `score_to_label` checks first: a
+    score exactly at `HUMAN_THRESHOLD` is `human` (the `<=` check), and one
+    exactly at `AI_THRESHOLD` is `ai` (the `>=` check, checked first). The
+    ranges below spell that out so the text and the comparison operators
+    can't say two different things.
     """
     return [
-        ("high-confidence human", f"0.00 – {config.HUMAN_THRESHOLD:.2f}"),
-        ("unsure", f"{config.HUMAN_THRESHOLD:.2f} – {config.AI_THRESHOLD:.2f}"),
-        ("high-confidence AI", f"{config.AI_THRESHOLD:.2f} – 1.00"),
+        ("high-confidence human", f"0.00 – {config.HUMAN_THRESHOLD:.2f} (inclusive)"),
+        ("unsure", f"above {config.HUMAN_THRESHOLD:.2f} – below {config.AI_THRESHOLD:.2f}"),
+        ("high-confidence AI", f"{config.AI_THRESHOLD:.2f} (inclusive) – 1.00"),
     ]

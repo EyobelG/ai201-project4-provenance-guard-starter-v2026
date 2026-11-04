@@ -157,9 +157,16 @@ than `ai`, which is the behavior the rule is designed for.
 
 | Label | Score range | The exact text a reader sees |
 |---|---|---|
-| high-confidence human | 0.00 – 0.35 | "This looks like it was written by a person." |
-| unsure | 0.35 – 0.65 | "We can't tell confidently whether a person or an AI wrote this. That's not a strike against you — if you wrote it yourself, you're welcome to appeal so a person can take a closer look." |
-| high-confidence AI | 0.65 – 1.00 | "This looks like it was written by an AI system, not a person. If you wrote this yourself, you can appeal and a person will take a closer look." |
+| high-confidence human | 0.00 – 0.35, inclusive of 0.35 | "This looks like it was written by a person." |
+| unsure | above 0.35, below 0.65 | "We can't tell confidently whether a person or an AI wrote this. That's not a strike against you — if you wrote it yourself, you're welcome to appeal so a person can take a closer look." |
+| high-confidence AI | 0.65 – 1.00, inclusive of 0.65 | "This looks like it was written by an AI system, not a person. If you wrote this yourself, you can appeal and a person will take a closer look." |
+
+<!-- `scoring.py::score_to_label` checks `>= AI_THRESHOLD` first, then
+     `<= HUMAN_THRESHOLD`, so a score of exactly 0.35 is `human` and exactly
+     0.65 is `ai` — "unsure" is the strictly-between band. `scoring.py::
+     label_ranges()` prints these same ranges so the README and the code
+     can't drift apart; `test_signals.py` has boundary assertions at both
+     values. -->
 
 A verified-human credential (stretch — see **Stretch Features** below) appends
 one more sentence to any of the three: *"This writer holds a verified-human
@@ -195,6 +202,30 @@ Three stretch features, all built:
    true` in the response and log entry, and the label gets one appended
    sentence saying so.
 
+Pasted requests and responses for all three are under **Sample Run**, below.
+
+---
+
+## Testing
+
+`scoring.py`, `stylometry.py`, and `lexical.py` are pure functions — a string
+in, a float out, no server or model download required to exercise them.
+`test_signals.py` runs a handful of plain assertions against them: empty-text
+and single-sentence edge cases, and the exact label-boundary scores (0.35 and
+0.65) where `score_to_label`'s `<=`/`>=` comparisons decide which label wins.
+
+```bash
+$ python test_signals.py
+```
+
+17 of 17 pass as of this submission — see the pasted output in the project's
+commit history, or run it yourself; it takes under a second.
+
+Malformed input is also never silent: every `400` from `/submit`, `/appeal`,
+and `/verify` is logged through `audit.log_rejection` (`status: "rejected"`),
+not just returned to the caller — see the rejected entry in **Sample Run**'s
+log excerpt below.
+
 ---
 
 ## Sample Run
@@ -218,7 +249,7 @@ $ curl -X POST http://127.0.0.1:5000/submit \
 ```json
 {
   "confidence": 0.7892,
-  "content_id": "2d3c3955-f5d2-4107-9833-04ddc1974232",
+  "content_id": "26a2f375-8751-4700-826f-c4e5d77ab9a3",
   "guess": "ai",
   "label": "This looks like it was written by an AI system, not a person. If you wrote this yourself, you can appeal and a person will take a closer look.",
   "lexical_score": 0.7728,
@@ -233,19 +264,19 @@ $ curl -X POST http://127.0.0.1:5000/submit \
 ```bash
 $ curl -X POST http://127.0.0.1:5000/appeal \
   -H "Content-Type: application/json" \
-  -d '{"content_id": "2d3c3955-f5d2-4107-9833-04ddc1974232", "reasoning": "I wrote this paragraph myself for a class assignment; it just happens to read formally."}'
+  -d '{"content_id": "26a2f375-8751-4700-826f-c4e5d77ab9a3", "reasoning": "I wrote this paragraph myself for a class assignment; it just happens to read formally."}'
 ```
 
 ```json
 {
-  "content_id": "2d3c3955-f5d2-4107-9833-04ddc1974232",
+  "content_id": "26a2f375-8751-4700-826f-c4e5d77ab9a3",
   "entry": {
-    "content_id": "2d3c3955-f5d2-4107-9833-04ddc1974232",
+    "content_id": "26a2f375-8751-4700-826f-c4e5d77ab9a3",
     "creator_id": "demo-writer-1",
     "event": "appeal",
     "reasoning": "I wrote this paragraph myself for a class assignment; it just happens to read formally.",
     "status": "under_review",
-    "timestamp": "2026-11-04T07:14:26+00:00"
+    "timestamp": "2026-11-04T13:05:42+00:00"
   },
   "message": "Appeal recorded. A person will review this submission.",
   "ok": true,
@@ -253,19 +284,94 @@ $ curl -X POST http://127.0.0.1:5000/appeal \
 }
 ```
 
-**What the log shows afterwards**
+**Stretch — earning the verified-human credential, then submitting**
 
 ```bash
-$ curl "http://127.0.0.1:5000/log?limit=3"
+$ curl -X POST http://127.0.0.1:5000/verify \
+  -H "Content-Type: application/json" \
+  -d '{"creator_id": "demo-writer-2", "attestation": "I wrote this myself"}'
+```
+
+```json
+{"creator_id": "demo-writer-2", "ok": true, "verified_human": true}
+```
+
+```bash
+$ curl -X POST http://127.0.0.1:5000/submit \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Honestly? I was not sure this would even run the first time. It broke twice, then on the third try it just worked and I still do not fully know why.", "creator_id": "demo-writer-2"}'
 ```
 
 ```json
 {
-  "count": 2,
+  "confidence": 0.5603,
+  "content_id": "af1bcc74-df8d-4f79-954a-a0f099e91d1a",
+  "guess": "unsure",
+  "label": "We can't tell confidently whether a person or an AI wrote this. That's not a strike against you — if you wrote it yourself, you're welcome to appeal so a person can take a closer look. This writer holds a verified-human credential.",
+  "lexical_score": 0.8718,
+  "model_score": 0.5547,
+  "style_score": 0.3896,
+  "verified_human": true
+}
+```
+
+Note the label's appended sentence and `"verified_human": true` — that's the
+credential showing on the writer's work, per the stretch brief.
+
+**Stretch — looking up that item's status**
+
+```bash
+$ curl http://127.0.0.1:5000/content/af1bcc74-df8d-4f79-954a-a0f099e91d1a
+```
+
+```json
+{
+  "content_id": "af1bcc74-df8d-4f79-954a-a0f099e91d1a",
+  "status": "decided",
+  "history": [
+    {
+      "combined_score": 0.5603,
+      "content_id": "af1bcc74-df8d-4f79-954a-a0f099e91d1a",
+      "creator_id": "demo-writer-2",
+      "guess": "unsure",
+      "label": "We can't tell confidently whether a person or an AI wrote this. That's not a strike against you — if you wrote it yourself, you're welcome to appeal so a person can take a closer look. This writer holds a verified-human credential.",
+      "lexical_score": 0.8718,
+      "model_score": 0.5547,
+      "status": "decided",
+      "style_score": 0.3896,
+      "timestamp": "2026-11-04T13:05:42+00:00",
+      "verified_human": true
+    }
+  ]
+}
+```
+
+**A rejected request — malformed input is logged, not just returned**
+
+```bash
+$ curl -X POST http://127.0.0.1:5000/submit \
+  -H "Content-Type: application/json" \
+  -d '{"creator_id": "demo-writer-2"}'
+```
+
+```json
+{"error": "bad_request", "message": "'text' is required and must be a non-empty string."}
+```
+
+**What the log shows afterwards** — all four events from this run, including
+the appeal and the rejection, oldest first:
+
+```bash
+$ curl "http://127.0.0.1:5000/log?limit=10"
+```
+
+```json
+{
+  "count": 4,
   "entries": [
     {
       "combined_score": 0.7892,
-      "content_id": "2d3c3955-f5d2-4107-9833-04ddc1974232",
+      "content_id": "26a2f375-8751-4700-826f-c4e5d77ab9a3",
       "creator_id": "demo-writer-1",
       "guess": "ai",
       "label": "This looks like it was written by an AI system, not a person. If you wrote this yourself, you can appeal and a person will take a closer look.",
@@ -273,16 +379,37 @@ $ curl "http://127.0.0.1:5000/log?limit=3"
       "model_score": 0.8864,
       "status": "decided",
       "style_score": 0.6736,
-      "timestamp": "2026-11-04T07:14:26+00:00",
+      "timestamp": "2026-11-04T13:05:41+00:00",
       "verified_human": false
     },
     {
-      "content_id": "2d3c3955-f5d2-4107-9833-04ddc1974232",
+      "content_id": "26a2f375-8751-4700-826f-c4e5d77ab9a3",
       "creator_id": "demo-writer-1",
       "event": "appeal",
       "reasoning": "I wrote this paragraph myself for a class assignment; it just happens to read formally.",
       "status": "under_review",
-      "timestamp": "2026-11-04T07:14:26+00:00"
+      "timestamp": "2026-11-04T13:05:42+00:00"
+    },
+    {
+      "combined_score": 0.5603,
+      "content_id": "af1bcc74-df8d-4f79-954a-a0f099e91d1a",
+      "creator_id": "demo-writer-2",
+      "guess": "unsure",
+      "label": "We can't tell confidently whether a person or an AI wrote this. That's not a strike against you — if you wrote it yourself, you're welcome to appeal so a person can take a closer look. This writer holds a verified-human credential.",
+      "lexical_score": 0.8718,
+      "model_score": 0.5547,
+      "status": "decided",
+      "style_score": 0.3896,
+      "timestamp": "2026-11-04T13:05:42+00:00",
+      "verified_human": true
+    },
+    {
+      "creator_id": "demo-writer-2",
+      "event": "rejected",
+      "message": "'text' is required and must be a non-empty string.",
+      "reason": "bad_request",
+      "status": "rejected",
+      "timestamp": "2026-11-04T13:05:42+00:00"
     }
   ]
 }

@@ -36,9 +36,44 @@ import lexical
 import scoring
 import stylometry
 
-MAX_TEXT_CHARS = 20000
-
 app = Flask(__name__)
+
+
+# ── Shared request-validation helpers ─────────────────────────────────────────
+# /submit, /appeal and /verify all need "is this field a non-empty string, and
+# is it short enough" — one place for that rule instead of three copies that
+# can drift apart.
+
+def _require_string(payload: dict, field: str, max_chars: int | None = None):
+    """
+    Pull a required non-empty string field out of payload.
+
+    Returns (value, None) on success, or (None, error_message) on failure —
+    the caller decides what to do with the error, including logging it.
+    """
+    value = payload.get(field)
+    if not isinstance(value, str) or not value.strip():
+        return None, f"'{field}' is required and must be a non-empty string."
+    if max_chars is not None and len(value) > max_chars:
+        return None, f"'{field}' exceeds the {max_chars}-character limit."
+    return value, None
+
+
+def _reject(message: str, creator_id: str = "unknown", **extra):
+    """
+    A 400 that still leaves a trace in the audit log.
+
+    Every rejection in this file goes through here — an attack that shows up
+    only as an absence is one nobody can diagnose later.
+    """
+    audit.log_rejection(creator_id=creator_id, reason="bad_request", message=message, **extra)
+    return jsonify({"error": "bad_request", "message": message}), 400
+
+
+def _raw_creator_id(payload: dict) -> str:
+    """Best-effort creator_id for logging, even when it fails validation."""
+    value = payload.get("creator_id")
+    return value if isinstance(value, str) and value.strip() else "unknown"
 
 
 # ── Rate limiting — UNIT 8 ────────────────────────────────────────────────────
@@ -208,31 +243,17 @@ def submit():
     """
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
-        return jsonify({
-            "error": "bad_request",
-            "message": "Request body must be a JSON object.",
-        }), 400
+        return _reject("Request body must be a JSON object.")
 
-    text = payload.get("text")
-    creator_id = payload.get("creator_id")
+    log_creator_id = _raw_creator_id(payload)
 
-    if not isinstance(text, str) or not text.strip():
-        return jsonify({
-            "error": "bad_request",
-            "message": "'text' is required and must be a non-empty string.",
-        }), 400
+    text, text_err = _require_string(payload, "text", max_chars=config.MAX_TEXT_CHARS)
+    if text_err:
+        return _reject(text_err, creator_id=log_creator_id)
 
-    if not isinstance(creator_id, str) or not creator_id.strip():
-        return jsonify({
-            "error": "bad_request",
-            "message": "'creator_id' is required and must be a non-empty string.",
-        }), 400
-
-    if len(text) > MAX_TEXT_CHARS:
-        return jsonify({
-            "error": "bad_request",
-            "message": f"'text' exceeds the {MAX_TEXT_CHARS}-character limit.",
-        }), 400
+    creator_id, creator_err = _require_string(payload, "creator_id")
+    if creator_err:
+        return _reject(creator_err, creator_id=log_creator_id)
 
     content_id = str(uuid.uuid4())
 
@@ -241,7 +262,7 @@ def submit():
     except detector.DetectorUnavailable as exc:
         return jsonify({"error": "detector_unavailable", "message": str(exc)}), 503
     except ValueError as exc:
-        return jsonify({"error": "bad_request", "message": str(exc)}), 400
+        return _reject(str(exc), creator_id=creator_id)
 
     style_score = stylometry.style_signal(text)
     lexical_score = lexical.lexical_signal(text)
@@ -300,32 +321,21 @@ def appeal():
     """
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
-        return jsonify({
-            "error": "bad_request",
-            "message": "Request body must be a JSON object.",
-        }), 400
+        return _reject("Request body must be a JSON object.")
 
-    content_id = payload.get("content_id")
-    reasoning = payload.get("reasoning")
+    content_id, content_id_err = _require_string(payload, "content_id")
+    if content_id_err:
+        return _reject(content_id_err)
 
-    if not isinstance(content_id, str) or not content_id.strip():
-        return jsonify({
-            "error": "bad_request",
-            "message": "'content_id' is required and must be a non-empty string.",
-        }), 400
-
-    if not isinstance(reasoning, str) or not reasoning.strip():
-        return jsonify({
-            "error": "bad_request",
-            "message": "'reasoning' is required and must be a non-empty string.",
-        }), 400
+    reasoning, reasoning_err = _require_string(payload, "reasoning")
+    if reasoning_err:
+        return _reject(reasoning_err)
 
     prior = audit.entries_for(content_id)
     if not prior:
-        return jsonify({
-            "error": "not_found",
-            "message": f"No submission found for content_id '{content_id}'.",
-        }), 404
+        message = f"No submission found for content_id '{content_id}'."
+        audit.log_rejection(creator_id="unknown", reason="unknown_content_id", message=message)
+        return jsonify({"error": "not_found", "message": message}), 404
 
     creator_id = prior[0].get("creator_id", "unknown")
     entry = audit.log_appeal(content_id=content_id, creator_id=creator_id, reasoning=reasoning)
@@ -379,25 +389,17 @@ def verify():
     """
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
-        return jsonify({
-            "error": "bad_request",
-            "message": "Request body must be a JSON object.",
-        }), 400
+        return _reject("Request body must be a JSON object.")
 
-    creator_id = payload.get("creator_id")
+    creator_id, creator_err = _require_string(payload, "creator_id")
+    if creator_err:
+        return _reject(creator_err)
+
     attestation = payload.get("attestation")
-
-    if not isinstance(creator_id, str) or not creator_id.strip():
-        return jsonify({
-            "error": "bad_request",
-            "message": "'creator_id' is required and must be a non-empty string.",
-        }), 400
-
     if attestation != credential.ATTESTATION_PHRASE:
-        return jsonify({
-            "error": "attestation_mismatch",
-            "message": f"'attestation' must be exactly: \"{credential.ATTESTATION_PHRASE}\"",
-        }), 400
+        message = f"'attestation' must be exactly: \"{credential.ATTESTATION_PHRASE}\""
+        audit.log_rejection(creator_id=creator_id, reason="attestation_mismatch", message=message)
+        return jsonify({"error": "attestation_mismatch", "message": message}), 400
 
     credential.grant(creator_id)
     return jsonify({"ok": True, "creator_id": creator_id, "verified_human": True})

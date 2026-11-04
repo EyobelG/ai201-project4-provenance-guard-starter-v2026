@@ -32,6 +32,8 @@ underneath. It still adds value when the other two split, because it's
 measuring something neither of them touches.
 """
 
+import config
+
 FUNCTION_WORDS = {
     "the", "a", "an", "and", "or", "but", "if", "of", "to", "in", "on", "at",
     "is", "are", "was", "were", "be", "been", "being", "it", "its", "this",
@@ -79,8 +81,8 @@ def lexical_signal(text: str) -> float:
     fwr = function_word_ratio(text)
     awl = avg_word_length(text)
 
-    fwr_center = 0.47
-    awl_center = 4.5
+    fwr_center = config.LEXICAL_FWR_CENTER
+    awl_center = config.LEXICAL_AWL_CENTER
 
     fwr_distance = min(abs(fwr - fwr_center) / 0.25, 1.0)
     awl_distance = min(abs(awl - awl_center) / awl_center, 1.0)

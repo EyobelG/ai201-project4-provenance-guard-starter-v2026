@@ -46,6 +46,14 @@ DETECTOR_MODEL = os.getenv("AI201_DETECTOR_MODEL", "gpt2")
 # 300 words, which is enough for the signal to mean something.
 DETECTOR_MAX_TOKENS = 400
 
+# Turning raw perplexity into a 0-1 score (detector.py::model_signal). The
+# midpoint is the perplexity that scores 0.5; steepness controls how sharply
+# the score moves either side of it. Move the midpoint once you've run real
+# calibration text and seen where it actually lands — that's a scoring
+# decision, so it lives here rather than buried in detector.py.
+DETECTOR_PERPLEXITY_MIDPOINT = 45.0
+DETECTOR_STEEPNESS = 1.6
+
 
 # ─── Scoring (Milestone 4) ───────────────────────────────────────────────────
 # How much each signal counts toward the combined score.
@@ -61,6 +69,27 @@ WEIGHT_STYLE_SIGNAL = 0.35
 # of the three to fool on purpose, so it earns the least trust by default.
 # The three weights sum to 1.0.
 WEIGHT_LEXICAL_SIGNAL = 0.20
+
+# ─── Signal internals ────────────────────────────────────────────────────────
+# Tuning knobs for the individual signals. Grouped here, not in each signal's
+# module, so tuning after an attack run means editing one file, not four.
+
+# stylometry.py::style_signal — how the three sub-measures combine.
+STYLE_WEIGHT_SPREAD = 0.4       # sentence_length_spread
+STYLE_WEIGHT_TTR = 0.3          # type_token_ratio
+STYLE_WEIGHT_PUNCTUATION = 0.3  # punctuation_density
+
+# stylometry.py — ceilings used to normalize raw measures onto 0-1 before
+# they're combined. A coefficient of variation at or above this is treated as
+# maximally human-like sentence variety; a punctuation density at or above
+# this (marks per word) is treated as the human-like ceiling.
+STYLE_SPREAD_CV_CEILING = 1.0
+STYLE_PUNCTUATION_DENSITY_CEILING = 0.05
+
+# lexical.py::lexical_signal — the "generic center" a text's distance is
+# measured against, on function-word ratio and average word length.
+LEXICAL_FWR_CENTER = 0.47
+LEXICAL_AWL_CENTER = 4.5
 
 
 # ─── Thresholds (Milestone 5) ────────────────────────────────────────────────
@@ -106,6 +135,12 @@ RATE_LIMIT_PER_DAY = 200
 # and wrong for anything real — a restart forgets every count, and two copies
 # of the service wouldn't share limits.
 RATE_LIMIT_STORAGE = "memory://"
+
+
+# ─── Request limits ──────────────────────────────────────────────────────────
+
+# /submit rejects text longer than this with a 400, before any signal runs.
+MAX_TEXT_CHARS = 20000
 
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
