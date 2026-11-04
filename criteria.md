@@ -42,63 +42,68 @@ Two things worth knowing before you pick numbers:
   a **miss**.
 
 ---
-## 1.
+## 1. False positives on my own writing
 
-<!-- Your criterion. It must name a number. -->
+Of 10 short passages I write myself (not copied, not pasted from anywhere),
+at most 1 is labeled `high-confidence AI`.
 
-
-
-**Why this target:**
-
-
-
----
-
-## 2.
-
-<!-- Your criterion. -->
-
-
-
-**Why this target:**
-
-
+**Why this target:** On a writing site, calling a real writer's work AI is the
+expensive mistake — it costs a person their credibility over something they
+didn't do. Missing some AI-generated text costs the site a little moderation
+work. A 1-in-10 ceiling says the system should almost never make that
+accusation against an ordinary human writer, even though it can't be zero.
 
 ---
 
-## 3.
+## 2. Score spread between clearly-AI and clearly-human text
 
-<!-- Your criterion. -->
+A paragraph I generate from an AI model and a paragraph I write myself, both
+on the same topic and similar length, score at least 0.40 apart on the
+combined 0–1 scale.
 
-
-
-**Why this target:**
-
-
-
----
-
-## 4.
-
-<!-- Your criterion. -->
-
-
-
-**Why this target:**
-
-
+**Why this target:** If the two signals can't separate the easiest possible
+case — the one with no disguise at all — then the system has nothing to say
+about the harder cases either. 0.40 is large enough that the two land in
+different thirds of the scale, not just on opposite sides of a single
+threshold line.
 
 ---
 
-## 5.
+## 3. Label coverage
 
-<!-- Your criterion. -->
+Each of the three labels — `high-confidence human`, `unsure`, and
+`high-confidence AI` — is produced by at least one real piece of text I submit
+while testing.
 
+**Why this target:** A label nobody can reach is a gap in the threshold math,
+not a real part of the system. If I can't produce all three on purpose, a
+writer could get stuck seeing one that never resolves to a clear answer
+either way.
 
+---
 
-**Why this target:**
+## 4. The appeal path always works
 
+Of 5 appeals I submit against valid content IDs, 5 move that item's status to
+`under_review` and 5 show up in `GET /log` on the very next read.
 
+**Why this target:** The appeal endpoint is the only thing standing between a
+wrong accusation and nothing at all. A path that works most of the time is a
+path a falsely-accused writer can't rely on — this one has to be 5 for 5, not
+"usually."
+
+---
+
+## 5. Bad input never crashes the service
+
+Of 3 malformed `/submit` requests — missing `text`, empty `text`, and a
+50,000-character `text` — all 3 return a `400` with a readable error message,
+and 0 return a `500`.
+
+**Why this target:** A crash on bad input looks like a bug report, not a
+judgment about anyone's writing, and a service that falls over on the first
+weird request isn't one a real site could run. "Never 500 on malformed input"
+is the one number on this list that should be unconditional.
 
 ---
 
