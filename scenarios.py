@@ -26,45 +26,90 @@ SCENARIOS = [
     {
         "name": "my own writing",
         "criterion": 1,
-        # ⚠️ PUT YOUR OWN WRITING HERE. Not AI text, not a sample from the web —
-        # things you actually wrote. This is the criterion that matters most and
-        # it's meaningless with someone else's prose.
         "texts": [
-            "REPLACE ME with a paragraph you wrote yourself.",
-            "REPLACE ME with another one. Ten pieces is the usual number.",
+            "I missed the bus this morning so I walked the whole way, which "
+            "ended up being nice because the air was cold and I had time to "
+            "think about nothing in particular.",
+            "My roommate keeps leaving dishes in the sink and I've decided I'm "
+            "not going to say anything about it today, mostly because I said "
+            "something about it yesterday and it didn't help.",
+            "The coffee shop near my apartment closed last month and honestly "
+            "I'm still a little bitter about it. Nowhere else has the same "
+            "burnt smell that somehow worked.",
+            "I tried to fix the squeaky door hinge with cooking oil because I "
+            "didn't have WD-40, and it worked for about two days before the "
+            "squeak came back worse.",
+            "We argued about where to eat for twenty minutes and then ended up "
+            "at the same diner we always go to. I don't think either of us "
+            "actually wanted to decide.",
+            "There's a stray cat that sits on my windowsill every evening "
+            "around six. I never feed it on purpose but I think it knows I "
+            "will eventually.",
+            "I rewrote the same paragraph of my essay four times last night "
+            "and the version I kept was basically the first one, just with "
+            "two commas moved.",
+            "My little brother asked me to help him study for a test he "
+            "insists he doesn't care about, and then quizzed himself out loud "
+            "for an hour after I left.",
+            "The bus was late again, which at this point feels less like bad "
+            "luck and more like a personality trait of the route itself.",
+            "I burned the garlic again. Every single time I tell myself I'll "
+            "watch the pan and every single time I check my phone for ten "
+            "seconds too long.",
+        ],
+    },
+    {
+        "name": "score spread — AI vs human, same topic",
+        "criterion": 2,
+        "texts": [
+            # AI-generated (via an LLM), same topic as the human one below.
+            "The adoption of remote work has fundamentally transformed "
+            "workplace dynamics in recent years. Organizations must now "
+            "consider a variety of important factors, including employee "
+            "productivity, communication infrastructure, and the overall "
+            "impact on company culture. It is essential to implement clear "
+            "policies that address these considerations in order to ensure "
+            "a smooth transition for all stakeholders involved.",
+            # Human-written, same topic (remote work), deliberately specific/lumpy.
+            "Working from home sounded great until my cat learned to open the "
+            "office door with her paw. Now every call has a forty-pound "
+            "interruption. I like not commuting. I do not like explaining why "
+            "there's a cat on the keyboard during a client meeting — again.",
         ],
     },
     {
         "name": "label coverage",
-        "criterion": 2,
-        # Inputs spread across your score range, so you can check all three
-        # labels are actually reachable.
+        "criterion": 3,
         "texts": [
-            "REPLACE ME with something you're confident is AI-generated.",
-            "REPLACE ME with something you're confident is human-written.",
-            "REPLACE ME with something genuinely borderline.",
+            "The implementation of the proposed framework requires careful "
+            "consideration of several key factors. First, it is important to "
+            "note that the system must be able to handle a wide variety of "
+            "different inputs. Additionally, the overall performance of the "
+            "solution depends on a number of important variables.",
+            "Honestly? I was not sure this would even run the first time. It "
+            "broke twice, then on the third try it just worked and I still "
+            "do not fully know why.",
+            "The results were mixed; some parts worked as expected while "
+            "others required additional tuning before they behaved "
+            "correctly, and it is unclear whether the remaining cases are "
+            "genuine bugs.",
         ],
     },
-    # A bad-input criterion looks like this. Uncomment and adjust if that's one
-    # of your five — these are raw request bodies, sent exactly as written.
-    #
-    # {
-    #     "name": "bad input",
-    #     "criterion": 3,
-    #     "bodies": [
-    #         {"text": "", "creator_id": "eval_bad_empty"},
-    #         {"creator_id": "eval_bad_missing"},          # no text field at all
-    #         {"text": "word " * 50000, "creator_id": "eval_bad_huge"},
-    #         {"text": None, "creator_id": "eval_bad_null"},
-    #     ],
-    # },
+    {
+        "name": "bad input",
+        "criterion": 5,
+        "bodies": [
+            {"text": "", "creator_id": "eval_bad_empty"},
+            {"creator_id": "eval_bad_missing"},          # no text field at all
+            {"text": "word " * 50000, "creator_id": "eval_bad_huge"},
+            {"text": None, "creator_id": "eval_bad_null"},
+        ],
+    },
 
-    # TODO: add what your remaining criteria need.
-    #
-    # A criterion about the appeal path can't be tested by sending text alone;
-    # it needs a submission first and then an appeal against the content_id
-    # that came back. You'll need to test that one by hand, or extend this file
-    # and run_eval.py to do it. Saying which you did is part of the write-up.
+    # Criterion 4 (the appeal path) needs a submission's content_id before it
+    # can send an appeal, which this scenario shape can't express — it's
+    # tested by hand instead; see README's "Run Log and Verdicts" section for
+    # that evidence.
 ]
 
 
