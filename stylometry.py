@@ -161,7 +161,12 @@ def style_signal(text: str) -> float:
 
     ai_from_spread = 1.0 - spread_norm
     ai_from_ttr = 1.0 - ttr
-    ai_from_density = 1.0 - density_norm
+    # shortcut: zero marks maps to neutral (0.5), not fully AI-like — most
+    # short human writing has zero semicolons/dashes too, so treating absence
+    # as maximally AI-ish punished ordinary short prose (see README diagnosis).
+    # Upgrade: calibrate the neutral point against real human samples instead
+    # of a flat 0.5.
+    ai_from_density = 1.0 - density_norm if density_norm > 0 else 0.5
 
     score = (
         config.STYLE_WEIGHT_SPREAD * ai_from_spread
