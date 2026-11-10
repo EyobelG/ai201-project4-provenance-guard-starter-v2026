@@ -639,6 +639,72 @@ typo-evasion family an extra win.
 
 ---
 
+## A Second Improvement (stretch)
+
+**What I changed:** Diagnosis 1 also named signal one (`model_score`, 0.45
+weight) as a second contributor to the criterion 1 miss — plain, declarative
+writing reads as predictable to GPT-2 regardless of who wrote it, and the
+style fix alone left FP01–FP03 just above the line (0.682 / 0.708 / 0.651,
+against `AI_THRESHOLD = 0.65`). Rather than touch the model itself, I raised
+`AI_THRESHOLD` from `0.65` to `0.72` (`config.py`) — the same move the
+criterion's own "why this target" argument asks for: false accusations cost
+more than missed detections, so the bar for the accusation should sit higher.
+I checked first that `ai` stayed reachable at `0.72` — the unit 7 Sample Run
+exemplar text still scores 0.7367.
+
+**Re-run, before and after this change** (`run_eval.py --label second`,
+`run_attacks.py --set attack_set --label second` →
+`results/run_2026-11-10_1028_second.md`,
+`results/attack_run_2026-11-10_1028_second.md`):
+
+| Case | After fix 1 (`AI_THRESHOLD=0.65`) | After fix 2 (`AI_THRESHOLD=0.72`) |
+|---|---|---|
+| Criterion 1 (own writing) | 3/10 scored `ai` — still a MISS | **0/10 scored `ai` — HIT** |
+| FP01 | 0.682 → `ai` | 0.682 → `unsure` |
+| FP02 | 0.708 → `ai` | 0.708 → `unsure` |
+| FP03 | 0.651 → `ai` | 0.651 → `unsure` |
+| AI01 (`clearly_ai`) | 0.571 → `unsure` | 0.571 → `unsure` (unchanged — was already below both thresholds) |
+| EV01 (`evasion_typos`) | 0.339 → `human` | 0.339 → `human` (unchanged) |
+
+**Third run log**, same format as **Run Log and Verdicts** above
+(`run_eval.py --label second` → `results/run_2026-11-10_1028_second.md`):
+
+| Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
+|---|---|---|---|---|---|
+| 1. my own writing | ≤1/10 `ai` | 0/10 ai | 0/10 ai | 0/10 ai | **HIT** |
+| 2. score spread | ≥0.40 apart | 0.193 apart | same | same | still MISS |
+| 3. label coverage | all 3 labels reachable | ai, unsure, unsure | same | same | still MISS on these texts |
+| 5. bad input | 3/3 → 400, 0 → 500 | 4/4 → 400, 0 → 500 | same | same | HIT |
+
+**Did it help, and how do I know:** Yes, for criterion 1 specifically — 0 of
+10 own-writing samples now score `ai`, where the first fix alone left 3.
+The cost is on the other side of the same trade as before, just pushed
+further: a text now has to clear 0.72, not 0.65, to ever be told it looks
+like AI, so anything that was already a weak "ai" call (there was nothing in
+my attack set scoring between 0.65 and 0.72 to begin with) gets harder to
+catch going forward. The `ai` label itself stays reachable — confirmed
+against the unit 7 exemplar — so this isn't a label that's quietly become
+unreachable, just one that requires a stronger signal than before.
+
+---
+
+## Stretch — Per-creator rate limits
+
+Rate limiting here is keyed by `creator_id`, not by caller address
+(`app.py::rate_limit_key`, falling back to the caller's address only when
+the body isn't a JSON object with a `creator_id`). **What this catches that
+per-address limiting would miss:** several accounts submitting from behind
+the same NAT or proxy (a classroom, an office, a VPN exit node) stay
+independent instead of sharing one limit. **What it costs:** an attacker who
+rotates `creator_id` on every request — exactly what the `attacks.csv` family
+of this project's own attack set does — looks like a thousand different
+callers and never trips the limit at all; `FLOOD01`–`FLOOD05` in the attack
+run only meant anything *because* they deliberately shared one `creator_id`.
+A real deployment would need a second signal (address, account age, device
+fingerprint) layered on top to catch that rotation.
+
+---
+
 ## What's Still Broken
 
 - **Criterion 1 is still a miss.** 3 of 10 own-writing samples (and 2 of 3

@@ -15,6 +15,7 @@ case stylometry.py's own docstring calls out), and the exact label-boundary
 scores where the README's ranges meet the code's `<=`/`>=` comparisons.
 """
 
+import config
 import lexical
 import scoring
 import stylometry
@@ -113,12 +114,12 @@ check(
 
 check(
     "score_to_label: exactly at AI_THRESHOLD is 'ai' (the >= boundary)",
-    scoring.score_to_label(0.65)[0] == "ai",
+    scoring.score_to_label(config.AI_THRESHOLD)[0] == "ai",
 )
 
 check(
     "score_to_label: just below AI_THRESHOLD is 'unsure'",
-    scoring.score_to_label(0.64)[0] == "unsure",
+    scoring.score_to_label(config.AI_THRESHOLD - 0.01)[0] == "unsure",
 )
 
 check(
