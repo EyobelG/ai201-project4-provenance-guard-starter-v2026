@@ -449,122 +449,232 @@ $ curl "http://127.0.0.1:5000/log?limit=10"
 
 ## Rate Limiting
 
-**My limits:** ___ per minute, ___ per day
+**My limits:** 10 per minute, 200 per day (`config.py::RATE_LIMIT_PER_MINUTE` /
+`RATE_LIMIT_PER_DAY`), enforced by Flask-Limiter, keyed by `creator_id`.
 
-**Why those numbers and not others:**
-<!-- Think about two people: a real writer submitting their own work a few
-     times an hour, and a script sending a thousand variations to map your
-     thresholds. Your numbers have to be liveable for the first and hostile to
-     the second. -->
+**Why those numbers and not others:** A real writer submitting their own work
+a few times an hour never gets near 10 in a minute — even pasting and
+resubmitting several drafts in a row stays under it. A script mapping my
+thresholds, on the other hand, wants dozens or hundreds of calls in quick
+succession to do that cheaply, and 10/minute makes that expensive without
+ever touching a normal writer's workflow. 200/day is loose on purpose — it
+exists to catch a runaway script left looping overnight, not to ration a
+writer's day.
 
-**What a caller counts as:** <!-- per address, or per creator_id? They fail
-differently — one script can look like a thousand callers, and one household
-can look like one. -->
+**What a caller counts as:** Per `creator_id`, not per IP address
+(`app.py::rate_limit_key`). One household's writers on the same network stay
+independent; the cost is that one attacker who rotates `creator_id` values
+(as the attack set's non-`flood_same_creator` families all do, deliberately)
+looks like a crowd of different callers and never trips the limit at all —
+a limit keyed per-creator can't see that, and a production version would
+need a secondary signal (IP, account age) to catch it.
 
 **The run of status codes when I pushed past it:**
 
-<!-- python run_attacks.py --flood 15 -->
+    python run_attacks.py --flood 15
 
 ```
-
+200 200 200 200 200 200 200 200 200 200 429 429 429 429 429
 ```
+
+5 of 15 were rate limited — the 11th submission from the same `creator_id`
+inside a minute, exactly where `10/minute` says it should. `GET /log` after
+the run shows the matching `rejected` / `rate_limited` entries (see
+`results/flood_2026-11-10_1010.md`).
 
 ---
 
 ## Attack Run — Before
 
-<!-- Every attack with its outcome and a held-or-broke mark.
-     `run_attacks.py --label before` produces the table. -->
+The official unit 8 attack set sits behind a CodePath login I couldn't
+script past, so I assembled my own `attack_set/attacks.csv` and
+`attack_set/attacks_malformed_requests.csv` from the unit 7 demo samples
+(`clearly_ai`, `clearly_human`, `borderline`, `evasion_typos`,
+`lightly_edited_ai`, `injection`, `too_short`) plus three of my own
+false-positive writing samples and five malformed-request / flood cases of
+my own. `run_attacks.py --set attack_set --label before` produced
+`results/attack_run_2026-11-10_1017_before.md`; the table below is that run
+with HELD/BROKE added by hand.
 
+| ID | Family | Targeting | Status | Guess | Score | Verdict |
+|---|---|---|---|---|---|---|
+| AI01 | clearly_ai | generic AI paragraph — should score `ai` | 200 | unsure | 0.624 | HELD (ran clean; landed `unsure` instead of `ai` — a calibration miss, not an evasion of anything) |
+| HU01 | clearly_human | specific, voicey human paragraph — should score `human` | 200 | unsure | 0.472 | HELD |
+| BL01 | borderline | AI text rewritten casual — should land `unsure` | 200 | unsure | 0.451 | HELD |
+| EV01 | evasion_typos | 13 typos added to AI text | 200 | unsure | 0.392 | **BROKE** — pulled well below AI01's own score despite being the same paragraph with typos added |
+| EV02 | lightly_edited_ai | AI text lightly humanized | 200 | unsure | 0.566 | HELD |
+| INJ01 | injection | AI text + "Ignore previous instructions..." | 200 | unsure | 0.587 | HELD — the injection sentence doesn't move either signal; neither signal reads meaning |
+| TS01 | too_short | 2-word submission | 400 | — | — | HELD — rejected cleanly, no 500 |
+| FP01 | false_positive | ordinary human writing | 200 | **ai** | 0.735 | **BROKE** |
+| FP02 | false_positive | ordinary human writing | 200 | **ai** | 0.760 | **BROKE** |
+| FP03 | false_positive | ordinary human writing | 200 | **ai** | 0.703 | **BROKE** |
+| MAL01–05 | malformed_requests | missing/empty/huge/non-JSON/list body | 400 | — | — | HELD — all 5 came back 400, none 500 |
+| FLOOD01–05 | flood_same_creator | 5 submissions, one shared `creator_id` | 200 | unsure | — | HELD — only 5 requests, under the 10/minute limit, so no 429 was expected here |
 
-
-**Ten audit log entries from the run**
-
-<!-- Choose entries that show the interesting failures, not the ten easiest. -->
+**Ten audit log entries from the run** (`GET /log?limit=40`, full extract in
+`results/audit_extract.json`):
 
 ```json
-
+{"combined_score": 0.624, "content_id": "b9bf75de-d670-466d-a51a-3fdf301f38d3", "creator_id": "attacker_AI01", "guess": "unsure", "model_score": 0.7544, "style_score": 0.5247, "status": "decided"}
+{"combined_score": 0.472, "content_id": "3099fcc6-8292-4ddc-ae18-fafdc81fc8b0", "creator_id": "attacker_HU01", "guess": "unsure", "model_score": 0.4445, "style_score": 0.2521, "status": "decided"}
+{"combined_score": 0.392, "content_id": "e2e012a7-30bb-4deb-bfd3-bd18a66c5e43", "creator_id": "attacker_EV01", "guess": "unsure", "model_score": 0.2324, "style_score": 0.5804, "status": "decided"}
+{"combined_score": 0.587, "content_id": "dae87952-93f7-49e2-86c5-1eaebfff40f5", "creator_id": "attacker_INJ01", "guess": "unsure", "model_score": 0.6504, "style_score": 0.5922, "status": "decided"}
+{"creator_id": "attacker_TS01", "event": null, "message": "Text is too short to score — a few sentences at least.", "reason": "bad_request", "status": "rejected"}
+{"combined_score": 0.735, "content_id": "3b2c6973-75f8-4fad-918b-0f54bc7e16ac", "creator_id": "attacker_FP01", "guess": "ai", "model_score": 0.696, "style_score": 0.7375, "status": "decided"}
+{"combined_score": 0.760, "content_id": "37fcc214-756a-4453-ae7d-66846b63e698", "creator_id": "attacker_FP02", "guess": "ai", "model_score": 0.7293, "style_score": 0.7375, "status": "decided"}
+{"combined_score": 0.703, "content_id": "36c2a37e-076c-4d89-97d0-758429cdd1ba", "creator_id": "attacker_FP03", "guess": "ai", "model_score": 0.5895, "style_score": 0.72, "status": "decided"}
+{"creator_id": "unknown", "message": "Request body must be a JSON object.", "reason": "bad_request", "status": "rejected"}
+{"creator_id": "demo_instructor", "message": "'text' exceeds the 20000-character limit.", "reason": "bad_request", "status": "rejected"}
 ```
 
-**The single worst outcome** — the one I'd least want to explain to a writer
-whose work got caught by it:
-
-
+**The single worst outcome** — FP02: an ordinary, mildly complaint-y paragraph
+about a roommate and dishes, nothing formal or generic about it, scored
+0.760 and came back labeled high-confidence AI. That's the exact writer the
+system is supposed to protect, told the opposite of the truth with the
+highest confidence the service can express.
 
 ---
 
 ## Run Log and Verdicts
 
-<!-- Your five criteria across three trials. `run_eval.py --label before`. -->
+`run_eval.py --label before` against `scenarios.py` → `results/run_2026-11-10_1011_before.md`.
 
 | Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
 |---|---|---|---|---|---|
-| 1.  |  |  |  |  |  |
-| 2.  |  |  |  |  |  |
-| 3.  |  |  |  |  |  |
-| 4.  |  |  |  |  |  |
-| 5.  |  |  |  |  |  |
+| 1. my own writing | ≤1/10 `ai` | 4/10 ai | 4/10 ai | 4/10 ai | **MISS** |
+| 2. score spread (AI vs human, same topic) | ≥0.40 apart | 0.193 apart (0.602 vs 0.409) | same | same | **MISS** |
+| 3. label coverage | all 3 labels reachable | ai, unsure, unsure (no `human`) | same | same | **MISS** on these texts (`human` is reachable elsewhere — see EV01 in the attack run after the fix) |
+| 4. appeal path (tested by hand, not through `scenarios.py`) | 5/5 → `under_review`, 5/5 in `GET /log` | 5/5, 5/5 | 5/5, 5/5 | 5/5, 5/5 | HIT |
+| 5. bad input never crashes | 3/3 → 400, 0/3 → 500 | 4/4 → 400, 0 → 500 | same | same | HIT |
 
-**Real output from one trial**, pasted as text, naming the file and function
-that produced it:
+(Trials repeat exactly because `detector.model_signal` is deterministic
+against identical input on this machine — no sampling involved — so three
+trials of the same text return the same score each time. The flood and
+attack-set runs, run at different times against different inputs, are the
+evidence of day-to-day variation instead.)
+
+**Real output from one trial** (`run_eval.py` → `app.py::submit`):
 
 ```json
-
+{
+  "status": 200,
+  "guess": "ai",
+  "confidence": 0.735,
+  "model_score": 0.696,
+  "style_score": 0.7375,
+  "label": "This looks like it was written by an AI system, not a person. If you wrote this yourself, you can appeal and a person will take a closer look.",
+  "sent": "I missed the bus this morning so I walked the whole way, which ended u"
+}
 ```
 
 **Diagnoses**
 
-<!-- For each miss AND each broken attack: the stage and the mechanism.
+1. **Criterion 1 miss, and `FP01`–`FP03` in the attack run — stage: signal
+   two, `stylometry.py::style_signal`'s `punctuation_density` sub-measure.**
+   `punctuation_density` only counts `;`, `:`, em dash and en dash. Almost no
+   short, ordinary conversational writing uses any of those — mine didn't,
+   and FP01–FP03 didn't either. With zero marks, `density_norm` is `0`, so
+   `ai_from_density` was hard-coded to `1.0` — the single most AI-like value
+   the sub-measure can return — regardless of anything else about the text.
+   That sub-measure carries 0.3 of `style_signal`'s weight and `style_signal`
+   carries 0.35 of the combined score, so plain writing with no semicolons
+   picked up roughly `0.3 × 0.35 ≈ 0.105` toward `ai` for a reason that has
+   nothing to do with who wrote it. Combined with signal one's own blind
+   spot (plain writing reads as predictable to GPT-2 regardless of
+   authorship), that was enough to push 4 of 10 real paragraphs past
+   `AI_THRESHOLD`.
 
-     Your service has five stages: the route, signal one, signal two, the
-     combining rule, and the label mapping.
+2. **Criterion 2 miss — stage: signal two again, same mechanism.** The human
+   sample (no semicolons/dashes) got the same `1.0`-from-density penalty as
+   the AI sample, so the gap between them came almost entirely from signal
+   one. One signal doing all the separating work is why the spread (0.193)
+   fell well short of the 0.40 target — it isn't that the two texts read
+   alike, it's that signal two couldn't tell them apart at all on this axis.
 
-     Not a diagnosis:  "The evasion attacks got through."
-     A diagnosis:      "Four evasion inputs got through. All four had typos
-                        added to AI-generated text. My second signal measures
-                        word variety, and typos raise word variety — so it read
-                        them as more human. My combining rule weights that
-                        signal at 0.6, so it dragged the whole score down."
-
-     Look for a pattern. Five failures on one signal is one problem, not five. -->
-
-
+3. **Criterion 3 miss — stage: test design, not the service.** None of the
+   three `label coverage` scenario texts landed below `HUMAN_THRESHOLD`
+   (0.35); the "confident human" sample I wrote for it was specific but still
+   used clean punctuation and middling sentence variety, so it landed
+   `unsure` rather than `human`. The label itself is reachable — `EV01` in
+   the attack run (typo-laden AI text) scored `human` after the fix below —
+   it's that my test input for this criterion never tried to.
 
 ---
 
 ## The Improvement
 
-**What I changed:**
+**What I changed:** In `stylometry.py::style_signal`, when `punctuation_density`
+is exactly `0` (no `;:—–` at all), `ai_from_density` now returns the neutral
+midpoint `0.5` instead of the maximal-AI `1.0`. A text still gets full credit
+toward "human" for actually using those marks; it just stops being penalized
+for the much more common case of using none.
 
-**Which diagnosis pointed at it:**
+**Which diagnosis pointed at it:** Diagnosis 1 — the `0` → `1.0` mapping was
+the identified mechanism, and it's a one-line fix at the point it happens
+rather than a reweighting of the whole signal.
 
 ### Attack Run — After
 
-<!-- Same format. `run_attacks.py --label after` -->
+`run_attacks.py --set attack_set --label after` → `results/attack_run_2026-11-10_1018_after.md`.
 
+| ID | Family | Status | Guess | Score (before → after) | Verdict |
+|---|---|---|---|---|---|
+| AI01 | clearly_ai | 200 | unsure | 0.624 → 0.571 | HELD, drifted slightly further from `ai` |
+| EV01 | evasion_typos | 200 | **human** | 0.392 → **0.339** | **BROKE** — now crosses `HUMAN_THRESHOLD` |
+| FP01 | false_positive | 200 | ai | 0.735 → 0.682 | **still BROKE**, closer to the line |
+| FP02 | false_positive | 200 | ai | 0.760 → 0.708 | **still BROKE** |
+| FP03 | false_positive | 200 | ai | 0.703 → 0.651 | **still BROKE**, now 0.001 above `AI_THRESHOLD` |
+| everything else | — | 200/400 as before | — | ~unchanged | HELD |
 
-
-**Did it help, and how do I know:**
-
-<!-- Widening the unsure band usually fixes one problem and creates another.
-     Reporting that trade honestly is worth full credit. -->
-
-
+**Did it help, and how do I know:** Partly. All three false-positive scores
+dropped (0.735→0.682, 0.760→0.708, 0.703→0.651), confirming the mechanism in
+diagnosis 1 — but all three are still above `AI_THRESHOLD`, so criterion 1
+is still a miss (3 of 10 own-writing samples flagged `ai` instead of ≤1).
+The trade showed up immediately: `EV01`'s typo-laden AI paragraph, which
+only *held* at `unsure` before, now flips all the way to `human`, because
+the same sub-measure that was over-penalizing plain human writing was also
+the thing keeping typo'd AI text from reading as clean prose. Widening
+tolerance for the absence of semicolons helped real writers and handed the
+typo-evasion family an extra win.
 
 ---
 
 ## What's Still Broken
 
-<!-- For each attack still getting through and each criterion still missed:
-     what you'd do, and why you stopped. -->
+- **Criterion 1 is still a miss.** 3 of 10 own-writing samples (and 2 of 3
+  `false_positive` attacks) still score `ai`. Stage: signal one,
+  `detector.model_signal`. Mechanism: short, plainly-worded declarative
+  sentences are exactly what a small language model finds easiest to
+  predict, so they read as low-perplexity/high-AI regardless of authorship —
+  and signal one carries 0.45 of the combined score, more than enough to
+  carry a plain paragraph past 0.65 on its own. I didn't fix this one: the
+  real fix is recalibrating `DETECTOR_PERPLEXITY_MIDPOINT` against a real
+  set of human-written samples, and I don't have enough labeled calibration
+  text to do that without just guessing a new number that might overcorrect
+  the other way.
+- **The typo evasion (`EV01`) now succeeds outright.** Stage: signal two,
+  `type_token_ratio`. Mechanism: each misspelling creates a token that
+  doesn't repeat anywhere else in the text, so deliberately typo'd text gets
+  *more* credit for vocabulary variety than the clean version it was copied
+  from. I stopped here because the real fix — normalizing or spell-correcting
+  before measuring vocabulary variety — is a new preprocessing step, not a
+  one-line tuning change, and risks its own new blind spots (a genuine
+  non-native-English writer's real misspellings would get the same boost).
+- **The injection attack (`INJ01`) is handled only by accident.** Neither
+  signal reads meaning, so appending an instruction sentence does nothing —
+  which is correct here but only because nothing in this service parses
+  natural-language instructions in the first place. A future signal that
+  *did* read meaning (an LLM-based judge, say) would need an explicit defense
+  against this that doesn't exist anywhere in this codebase yet.
 
-
-
-**The trade I'd make if this ran for real:**
-
-<!-- Two sentences. Fewer wrong accusations means more AI text getting through.
-     Say which way you'd go and WHO PAYS FOR IT. -->
-
+**The trade I'd make if this ran for real:** I'd keep favoring fewer false
+accusations over catching more AI text, even knowing it leaves the typo
+evasion open — a wrongly-accused writer pays in reputation on a site where
+reputation is the product, while a missed AI paragraph costs the site a
+little moderation work it can absorb. The writers who disguise AI text with
+typos are the ones who pay for that choice by getting through; the writers
+who never gamed anything are the ones who'd have paid if I'd gone the other
+way.
 
 
 <!-- ═════════════════════════════════════════════════════════════════════
