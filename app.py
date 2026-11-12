@@ -20,10 +20,12 @@ Routes:
     POST /ping        the worked example. Already works. Don't edit it
     POST /submit      ← YOU BUILD THIS (Milestone 3, 4, 5)
     POST /appeal      ← YOU BUILD THIS (Milestone 5)
+    POST /batch       score several items in one call (Unit 9 capstone)
     GET  /log         the audit log. Already works
     GET  /health      is the service up, and is the model loaded
 """
 
+import time
 import uuid
 
 from flask import Flask, jsonify, request
@@ -74,6 +76,60 @@ def _raw_creator_id(payload: dict) -> str:
     """Best-effort creator_id for logging, even when it fails validation."""
     value = payload.get("creator_id")
     return value if isinstance(value, str) and value.strip() else "unknown"
+
+
+def _score_and_log(text: str, creator_id: str, **extra_log) -> dict:
+    """
+    Run all three signals on one piece of text, log the decision, and return
+    the response dict. Shared by `/submit` and `/batch` (Unit 9) so there is
+    exactly one place that decides what a submission scores.
+
+    Raises `detector.DetectorUnavailable` or `ValueError` straight through —
+    callers decide how to turn that into a response, since `/submit` answers
+    with a single error and `/batch` has to keep going for the other items.
+    """
+    started = time.perf_counter()
+    content_id = str(uuid.uuid4())
+
+    model_score = detector.model_signal(text)
+    style_score = stylometry.style_signal(text)
+    lexical_score = lexical.lexical_signal(text)
+
+    combined_score = scoring.combine_signals(model_score, style_score, lexical_score)
+    guess, label = scoring.score_to_label(combined_score)
+
+    verified_human = credential.is_verified(creator_id)
+    if verified_human:
+        label = f"{label} This writer holds a verified-human credential."
+
+    duration_ms = round((time.perf_counter() - started) * 1000, 1)
+
+    audit.log_decision(
+        content_id=content_id,
+        creator_id=creator_id,
+        guess=guess,
+        model_score=model_score,
+        style_score=style_score,
+        combined_score=combined_score,
+        label=label,
+        status="decided",
+        lexical_score=lexical_score,
+        verified_human=verified_human,
+        duration_ms=duration_ms,
+        **extra_log,
+    )
+
+    return {
+        "content_id": content_id,
+        "guess": guess,
+        "confidence": combined_score,
+        "label": label,
+        "model_score": model_score,
+        "style_score": style_score,
+        "lexical_score": lexical_score,
+        "verified_human": verified_human,
+        "duration_ms": duration_ms,
+    }
 
 
 # ── Rate limiting — UNIT 8 ────────────────────────────────────────────────────
@@ -255,48 +311,14 @@ def submit():
     if creator_err:
         return _reject(creator_err, creator_id=log_creator_id)
 
-    content_id = str(uuid.uuid4())
-
     try:
-        model_score = detector.model_signal(text)
+        result = _score_and_log(text, creator_id)
     except detector.DetectorUnavailable as exc:
         return jsonify({"error": "detector_unavailable", "message": str(exc)}), 503
     except ValueError as exc:
         return _reject(str(exc), creator_id=creator_id)
 
-    style_score = stylometry.style_signal(text)
-    lexical_score = lexical.lexical_signal(text)
-
-    combined_score = scoring.combine_signals(model_score, style_score, lexical_score)
-    guess, label = scoring.score_to_label(combined_score)
-
-    verified_human = credential.is_verified(creator_id)
-    if verified_human:
-        label = f"{label} This writer holds a verified-human credential."
-
-    audit.log_decision(
-        content_id=content_id,
-        creator_id=creator_id,
-        guess=guess,
-        model_score=model_score,
-        style_score=style_score,
-        combined_score=combined_score,
-        label=label,
-        status="decided",
-        lexical_score=lexical_score,
-        verified_human=verified_human,
-    )
-
-    return jsonify({
-        "content_id": content_id,
-        "guess": guess,
-        "confidence": combined_score,
-        "label": label,
-        "model_score": model_score,
-        "style_score": style_score,
-        "lexical_score": lexical_score,
-        "verified_human": verified_human,
-    })
+    return jsonify(result)
 
 
 @app.post("/appeal")
@@ -347,6 +369,81 @@ def appeal():
         "message": "Appeal recorded. A person will review this submission.",
         "entry": entry,
     })
+
+
+# ── Unit 9 capstone extension ─────────────────────────────────────────────────
+
+@app.post("/batch")
+def batch():
+    """
+    Score several pieces of text in one call. Unit 9's extension.
+
+    Expects JSON: {"items": [{"text": "...", "creator_id": "..."}, ...]}
+
+    One bad item among many shouldn't cost the caller the rest of the batch,
+    so a malformed or unscoreable item becomes an entry in `results` with an
+    `error` key instead of failing the whole request. The only things that
+    reject the whole call are malformed shape (not a dict, `items` not a
+    non-empty list) or exceeding `config.MAX_BATCH_ITEMS` — allowing either
+    through would turn one HTTP request into unbounded model inference.
+
+    Every item shares a `batch_id` in the audit log so the calls that
+    belonged to one batch can be found together later.
+    """
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _reject("Request body must be a JSON object.")
+
+    items = payload.get("items")
+    if not isinstance(items, list) or not items:
+        return _reject("'items' is required and must be a non-empty JSON array.")
+
+    if len(items) > config.MAX_BATCH_ITEMS:
+        return _reject(
+            f"Batch of {len(items)} items exceeds the {config.MAX_BATCH_ITEMS}-item limit."
+        )
+
+    batch_id = str(uuid.uuid4())
+    results = []
+
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            message = "Item must be a JSON object."
+            audit.log_rejection(creator_id="unknown", reason="bad_batch_item",
+                                message=message, batch_id=batch_id, index=index)
+            results.append({"index": index, "error": "bad_request", "message": message})
+            continue
+
+        log_creator_id = _raw_creator_id(item)
+
+        text, text_err = _require_string(item, "text", max_chars=config.MAX_TEXT_CHARS)
+        if text_err:
+            audit.log_rejection(creator_id=log_creator_id, reason="bad_request",
+                                message=text_err, batch_id=batch_id, index=index)
+            results.append({"index": index, "error": "bad_request", "message": text_err})
+            continue
+
+        creator_id, creator_err = _require_string(item, "creator_id")
+        if creator_err:
+            audit.log_rejection(creator_id=log_creator_id, reason="bad_request",
+                                message=creator_err, batch_id=batch_id, index=index)
+            results.append({"index": index, "error": "bad_request", "message": creator_err})
+            continue
+
+        try:
+            result = _score_and_log(text, creator_id, batch_id=batch_id, index=index)
+        except detector.DetectorUnavailable as exc:
+            results.append({"index": index, "error": "detector_unavailable", "message": str(exc)})
+            continue
+        except ValueError as exc:
+            audit.log_rejection(creator_id=creator_id, reason="bad_request",
+                                message=str(exc), batch_id=batch_id, index=index)
+            results.append({"index": index, "error": "bad_request", "message": str(exc)})
+            continue
+
+        results.append({"index": index, **result})
+
+    return jsonify({"batch_id": batch_id, "count": len(items), "results": results})
 
 
 # ── Stretch ──────────────────────────────────────────────────────────────────

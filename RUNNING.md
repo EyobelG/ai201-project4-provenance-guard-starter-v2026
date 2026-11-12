@@ -105,6 +105,7 @@ position.**
 | `python run_attacks.py --set <folder>` | The attack set — **unit 8** |
 | `python run_attacks.py --flood 15` | Push past your rate limit and print the status codes — **unit 8** |
 | `python run_eval.py --label before` | Your five criteria, three trials — **unit 8** |
+| `python run_batch_eval.py --label before` | The capstone `/batch` criteria, three trials — **unit 9** |
 
 ---
 
@@ -231,6 +232,10 @@ answer for this project, not a fallback and not a failure. Working out that a
 system doesn't fit its host *before* you spend an evening watching it get
 killed is the skill unit 9 is actually testing. Write the arithmetic above in
 your write-up; that's the deliverable.
+
+The capstone extension (`/batch`, below) runs under this exact same path —
+`python app.py`, nothing new to install. There's no separate deploy story for
+it because the thing that rules out Path A is the model, not the route count.
 
 ---
 

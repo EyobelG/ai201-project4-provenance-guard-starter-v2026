@@ -142,6 +142,11 @@ RATE_LIMIT_STORAGE = "memory://"
 # /submit rejects text longer than this with a 400, before any signal runs.
 MAX_TEXT_CHARS = 20000
 
+# /batch (Unit 9 capstone extension) rejects a request with more items than
+# this, before any item is scored. An unbounded batch turns one HTTP request
+# into unbounded model inference.
+MAX_BATCH_ITEMS = 20
+
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
 
