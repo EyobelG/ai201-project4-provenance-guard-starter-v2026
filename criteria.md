@@ -137,3 +137,64 @@ is the one number on this list that should be unconditional.
      A number you missed stays where it is, gets diagnosed, and gets a fix
      attempted. That's where the points are.
      ───────────────────────────────────────────────────────────────────────── -->
+
+---
+
+## Capstone criteria — Unit 9
+
+Five more, written before the extension is tested, for the new `/batch`
+endpoint (Shape C — extend one capability). Four of five are about the
+extension itself.
+
+### 1. Batch correctness
+
+Of 10 items sent in one `/batch` call, all 10 produce a `guess` and `label`
+that match what `/submit` returns for that same text sent alone, across all
+3 trials.
+
+**Why this target:** a batch endpoint that scores things differently than
+the single-item path isn't a convenience, it's a second, undocumented
+scoring system. Agreement has to be total, not "usually."
+
+### 2. Partial-failure isolation
+
+Of a 10-item batch where 3 items are malformed (missing `text`, empty
+`text`, `text` that isn't a string), the response always contains 7 decided
+results and 3 per-item errors, with 0 HTTP 500s, across all 3 trials.
+
+**Why this target:** the whole point of a batch call is that one caller's
+typo in item 6 of 10 shouldn't cost them the other 9. If one bad item can
+sink the batch, batching is strictly worse than looping `/submit` yourself.
+
+### 3. Batch size cap holds
+
+A batch of more than `MAX_BATCH_ITEMS` items is rejected with a `400` and
+zero items processed (nothing appears in the audit log as `decided` from
+that call), across all 3 trials.
+
+**Why this target:** an unbounded batch turns one HTTP request into an
+unbounded amount of model inference — the cap is the only thing standing
+between a normal caller and someone using `/batch` to flood the detector.
+
+### 4. Batching doesn't cost more per item
+
+Averaged over a 10-item batch, the per-item time is no more than 20% slower
+than the per-item time of 10 separate `/submit` calls, measured across 3
+trials.
+
+**Why this target:** 20% leaves room for batch-only overhead (JSON parsing
+a bigger body, building the results list) without hiding a real regression
+— if batching were, say, 2x slower per item, it would mean the model is
+being reloaded or something else expensive is happening per item instead
+of once.
+
+### 5. Malformed batch shapes never crash the service
+
+Of 3 malformed `/batch` requests — a non-dict item inside `items`, `items`
+that isn't a list, and an empty `items` list — all 3 return a `400` with a
+readable message, and 0 return a `500`.
+
+**Why this target:** same reasoning as criterion 5 in unit 7 — a crash on a
+weird shape is a bug report about the service, not a judgment about
+anyone's writing, and it's the one number here that should be
+unconditional.
