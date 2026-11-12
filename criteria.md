@@ -198,3 +198,19 @@ readable message, and 0 return a `500`.
 weird shape is a bug report about the service, not a judgment about
 anyone's writing, and it's the one number here that should be
 unconditional.
+
+> **Revised in unit 9:** Of 2 malformed `/batch` requests — `items` that
+> isn't a list, and an empty `items` list — both return a `400` with a
+> readable message, and 0 return a `500`. A list whose *items contain* a
+> non-dict entry is **not** one of these cases: it's covered by criterion 2
+> instead, which deliberately treats one bad item as an isolated per-item
+> error rather than a reason to fail the whole batch.
+>
+> **Why revised:** the original bundled two different failure classes under
+> one target. A non-dict item inside an otherwise-valid `items` list isn't a
+> malformed *request* — it's exactly the "one bad item among many"
+> situation criterion 2 exists to isolate, and the running code does isolate
+> it (200, with a per-item `error` entry), which is correct given criterion
+> 2's own design. The original target of "400" for that case was never
+> reachable without breaking criterion 2, so it wasn't a criterion I missed
+> — it was one that contradicted another criterion I'd already written.
