@@ -152,6 +152,13 @@ def main():
         print(f"Nothing answering at {args.url}. Start it:  python app.py", file=sys.stderr)
         sys.exit(1)
 
+    # Warm the detector model before any trial is timed. The first call
+    # anywhere pays ~550MB of model load (seconds), and whichever call
+    # happens to go first — batch or solo — absorbs that one-time cost and
+    # makes the comparison between them meaningless. See criteria.md #4.
+    print("warming up the detector model...")
+    post(session, args.url, "/submit", {"text": "warm up call.", "creator_id": "warmup"}, args.timeout)
+
     if args.trials < 3:
         print(f"!! {args.trials} trial(s). The submission asks for three.\n")
 

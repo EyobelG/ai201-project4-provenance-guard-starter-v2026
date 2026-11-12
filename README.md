@@ -778,4 +778,175 @@ way.
 
 ---
 
+## Capstone
+
+**What This Extends**
+
+This extends Provenance Guard, the system from projects/units 7 and 8 in
+this course — the Flask service that scores submitted text for how likely
+it is to be AI-written, logs every decision, and lets a writer appeal. What's
+new this unit is a `POST /batch` route: submit several pieces of text in one
+call instead of looping `/submit` yourself.
+
+**The Shape**
+
+Shape C — extend one capability. Out of scope: no new detection signal, no
+change to the three existing signals' weights or thresholds, no change to
+`/submit`, `/appeal`, `/verify`, or rate limiting, and no attempt at Path A
+hosting — `RUNNING.md` already worked out, with the memory arithmetic, that
+the local GPT-2 detector rules that out regardless of how many routes the
+service has.
+
+**Running It**
+
+Path B — local, with logs. Same command as every unit before this one:
+`python app.py`, documented in [RUNNING.md](RUNNING.md). Nothing new to
+install; `/batch` is just another route on the same process.
+
+**Instrumentation**
+
+Every `/batch` item writes the same nine-plus-field entry `/submit` always
+has (`timestamp`, `content_id`, `creator_id`, `guess`, `model_score`,
+`style_score`, `combined_score`, `lexical_score`, `label`, `status`,
+`verified_human`), plus two fields added this unit: `duration_ms` (wall
+time of the three signals + scoring, timed with `time.perf_counter()` in
+`app.py::_score_and_log`) and `batch_id` (shared by every item from one
+`/batch` call, plus an `index`, so a batch's items can be found together).
+A rejected item or request logs through `audit.log_rejection` with a
+`reason` instead of a decision — `app.py::batch`'s own validation, and
+`run_batch_eval.py`'s deliberately malformed scenarios, are what produced
+the rejections below.
+
+Ten real entries from `logs/audit.jsonl`, pasted as-is (three decided, then
+seven rejected — including the two kinds of failed request this unit's
+testing produced):
+
+```json
+{"timestamp": "2026-11-12T03:05:14+00:00", "content_id": "ff578aca-ab77-4d1f-9979-e9e510e1b3ad", "creator_id": "batcheval_5", "guess": "unsure", "model_score": 0.6169, "style_score": 0.3783, "combined_score": 0.5901, "label": "We can't tell confidently whether a person or an AI wrote this. That's not a strike against you — if you wrote it yourself, you're welcome to appeal so a person can take a closer look.", "status": "decided", "lexical_score": 0.9005, "verified_human": false, "duration_ms": 56.6, "batch_id": "9594d5a9-27fe-4059-8d6a-67c9f0b667f4", "index": 4}
+{"timestamp": "2026-11-12T03:05:14+00:00", "content_id": "6e916a9e-8202-4c40-9948-384c8f4de1b9", "creator_id": "batcheval_6", "guess": "unsure", "model_score": 0.416, "style_score": 0.5735, "combined_score": 0.5542, "label": "We can't tell confidently whether a person or an AI wrote this. That's not a strike against you — if you wrote it yourself, you're welcome to appeal so a person can take a closer look.", "status": "decided", "lexical_score": 0.8316, "verified_human": false, "duration_ms": 41.5, "batch_id": "9594d5a9-27fe-4059-8d6a-67c9f0b667f4", "index": 5}
+{"timestamp": "2026-11-12T03:05:14+00:00", "content_id": "8928b8fd-6083-4bf9-b287-4f8c43c0bfac", "creator_id": "batcheval_7", "guess": "unsure", "model_score": 0.3859, "style_score": 0.5833, "combined_score": 0.5318, "label": "We can't tell confidently whether a person or an AI wrote this. That's not a strike against you — if you wrote it yourself, you're welcome to appeal so a person can take a closer look.", "status": "decided", "lexical_score": 0.7699, "verified_human": false, "duration_ms": 42.8, "batch_id": "9594d5a9-27fe-4059-8d6a-67c9f0b667f4", "index": 6}
+{"timestamp": "2026-11-12T03:05:14+00:00", "creator_id": "batcheval_bad_1", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "'text' is required and must be a non-empty string.", "batch_id": "9594d5a9-27fe-4059-8d6a-67c9f0b667f4", "index": 7}
+{"timestamp": "2026-11-12T03:05:14+00:00", "creator_id": "batcheval_bad_2", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "'text' is required and must be a non-empty string.", "batch_id": "9594d5a9-27fe-4059-8d6a-67c9f0b667f4", "index": 8}
+{"timestamp": "2026-11-12T03:05:14+00:00", "creator_id": "batcheval_bad_3", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "'text' is required and must be a non-empty string.", "batch_id": "9594d5a9-27fe-4059-8d6a-67c9f0b667f4", "index": 9}
+{"timestamp": "2026-11-12T03:05:14+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "Batch of 30 items exceeds the 20-item limit."}
+{"timestamp": "2026-11-12T03:05:14+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "bad_batch_item", "message": "Item must be a JSON object.", "batch_id": "baa52e42-db98-41e5-a0d1-d8377201a8b1", "index": 0}
+{"timestamp": "2026-11-12T03:05:14+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "'items' is required and must be a non-empty JSON array."}
+{"timestamp": "2026-11-12T03:05:14+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "'items' is required and must be a non-empty JSON array."}
+```
+
+**What It Costs**
+
+No API spend — the detector is a local GPT-2, so the only cost is compute
+time on this machine. Measured, not estimated: 161 real `decided` log
+entries (excluding the one-time ~7.6s model-load entry recorded before the
+warm-up fix below) average **50.9 ms per submission**
+(`duration_ms`, read back from `logs/audit.jsonl`). A `/batch` item costs
+about the same per item as a solo `/submit` — see criterion 4 below.
+
+**The hundred-a-day arithmetic:** 100 submissions/day × 0.0509s ≈ **5.1
+seconds of compute/day** — trivially cheap in CPU-seconds. The real cost
+this system carries isn't per-request compute, it's standing memory:
+torch + the GPT-2 weights sit resident at roughly 0.75–1.3GB for as long
+as the process runs, which is the number `RUNNING.md` already used to rule
+out a free host. Batching doesn't change that arithmetic — it changes the
+number of HTTP round trips, not the number of model calls.
+
+**Run Log and Verdicts**
+
+Three trials each, before and after the fix below. "Target" is the
+20%-overhead bound from criterion 4; the other four criteria are pass/fail
+as written in `criteria.md`.
+
+*Before* (`results/batch_run_2026-11-11_2203_before.md`):
+
+| Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
+|---|---|---|---|---|---|
+| 1. Batch correctness | 10/10 match, 3/3 trials | 10/10 | 10/10 | 10/10 | MET |
+| 2. Partial-failure isolation | 7 decided + 3 errors, 0×500 | 7/3 | 7/3 | 7/3 | MET |
+| 3. Batch size cap | 400, nothing processed | 400 | 400 | 400 | MET |
+| 4. Batching overhead ≤20% | 814.8ms vs 63.7ms target | 50.6 vs 63.2 | 46.5 vs 55.4 | — | **MISSED** |
+| 5. Malformed batch shapes (revised) | 400/400 | 400/400 | 400/400 | 400/400 | MET |
+
+(Criterion 4's row: trial 1 came in at 814.8ms/item against a 63.7ms
+target — a 1,180% overage; trials 2 and 3 were already fine at 50.6ms and
+46.5ms. The target has to hold across all three trials, so this is a
+miss.)
+
+*After* (`results/batch_run_2026-11-11_2205_after.md`):
+
+| Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
+|---|---|---|---|---|---|
+| 1. Batch correctness | 10/10 match, 3/3 trials | 10/10 | 10/10 | 10/10 | MET |
+| 2. Partial-failure isolation | 7 decided + 3 errors, 0×500 | 7/3 | 7/3 | 7/3 | MET |
+| 3. Batch size cap | 400, nothing processed | 400 | 400 | 400 | MET |
+| 4. Batching overhead ≤20% | per-trial bound | 53.0 vs 64.5 | 51.9 vs 64.4 | 54.9 vs 59.6 | **MET** |
+| 5. Malformed batch shapes (revised) | 400/400 | 400/400 | 400/400 | 400/400 | MET |
+
+Real output, trial 1 of the before run, criterion 4 (pasted from
+`results/batch_run_2026-11-11_2203_before.md`):
+
+```json
+{
+  "batch": {"status": 200, "elapsed_ms": 8148.0},
+  "solo_per_item_ms": 53.1,
+  "batch_per_item_ms": 814.8
+}
+```
+
+**The Improvement**
+
+**Diagnosis:** `detector.py::_load` lazily loads the ~550MB GPT-2 model on
+the *first* call to `model_signal`, anywhere in the process, and keeps it
+in memory after that. `run_batch_eval.py`'s trial 1 called `/batch` before
+any `/submit` call, so the one-time model-load cost landed entirely inside
+the batch timing — making a 10-item batch look 15x slower per item than it
+actually is. Trials 2 and 3 were already fine because the model was warm
+by then. The mechanism is a test-harness ordering problem, not a bug in
+`/batch` itself: whichever call goes first absorbs the cold start, and in
+this design that happened to always be the batch call.
+
+**Fix:** added one warm-up `/submit` call at the top of
+`run_batch_eval.py::main`, before any trial starts timing
+(`run_batch_eval.py`, ~8 lines). Re-ran with `--label after`: all three
+trials of criterion 4 now land within the 20% bound (table above). No
+other criterion changed.
+
+**What's Still Broken**
+
+- The 20% overhead bound in criterion 4 is itself a fairly loose target —
+  measured overhead after the fix is closer to 0–5%, not the 20% ceiling.
+  If I tightened it, I'd set it to 10%.
+- `/batch` has no rate limiting of its own. `/submit` is limited per
+  `creator_id`; a caller can currently send unlimited `/batch` calls at
+  `MAX_BATCH_ITEMS` each and get `MAX_BATCH_ITEMS`× the throughput of the
+  rate limit on `/submit`. I noticed this while building the route and
+  decided it was out of scope — it's a real gap, and the fix would be
+  applying the same `@limiter.limit(...)` decorator to `/batch`, scaled by
+  item count rather than request count.
+- The one thing I'd do first if this ran for real: rate-limit `/batch` by
+  item count, not request count — it's the gap that actually matters for a
+  deployed version of this, and it's a small, well-understood change given
+  the limiter is already wired up for `/submit`.
+
+**How I Used AI**
+
+Two specific moments, using Claude Code in this session:
+
+1. Before writing any code, I asked it to look at all four prior AI201
+   projects and recommend one to extend plus a shape (A/B/C). It read
+   `RUNNING.md`'s existing Path A/B memory arithmetic and pointed out that
+   shapes A and B were both already mostly covered by this project's unit
+   7/8 work (the audit log, the run path, rate limiting, the attack set) —
+   so Shape C, a genuinely new capability, was the only one with real room
+   left. I adopted that instead of defaulting to "extend whatever."
+2. When the first `/batch` run showed criterion 4 missing by ~15x, but
+   only on trial 1, I asked it to find the actual stage and mechanism
+   rather than just loosen the target. It traced the spike to
+   `detector.py::_load`'s lazy, process-wide model load landing inside
+   whichever call ran first — which happened to always be the batch call
+   in the test order — and that's what the fix (warming up before timing)
+   is targeted at.
+
+---
+
 📖 **How to run this project: [RUNNING.md](RUNNING.md)**
