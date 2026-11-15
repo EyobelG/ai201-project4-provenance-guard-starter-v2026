@@ -810,11 +810,38 @@ hosting — `RUNNING.md` already worked out, with the memory arithmetic, that
 the local GPT-2 detector rules that out regardless of how many routes the
 service has.
 
+> **Revised after the capstone writeup:** `RUNNING.md`'s arithmetic (torch +
+> GPT-2 weights against a 512MB cap) is correct for the PaaS-style free
+> tier it was measured against, but that's a property of *that host's*
+> memory limit, not of every free host. Hugging Face Spaces' free CPU tier
+> gives 16GB, which fits. See **Running It** below for whether Path A
+> actually went live.
+>
+> **Why revised:** the original line treated "no free host fits" as a fact
+> about the model, when it's really a fact about one specific host's
+> ceiling. That's not a target I missed — it's a claim narrower than it
+> was written.
+
 **Running It**
 
 Path B — local, with logs. Same command as every unit before this one:
 `python app.py`, documented in [RUNNING.md](RUNNING.md). Nothing new to
 install; `/batch` is just another route on the same process.
+
+**Path A, attempted:** `Dockerfile` targets Hugging Face Spaces' free CPU
+tier (SDK "Docker"), running `gunicorn app:app --preload` instead of
+Flask's dev server, per `RUNNING.md`'s own instructions for running this
+somewhere else. `--preload` imports `app.py` in gunicorn's master process
+before forking workers, which skips `app.py::main()` entirely — so the
+startup warm-up from "A Second Improvement" above is gated behind
+`AI201_PRELOAD_WARMUP=1` (set in the `Dockerfile`) so it still runs there.
+Smoke-tested locally under `gunicorn --preload`: first request after
+startup measured **102.9ms**, not the ~7.9s cold start — confirming the
+warm-up works the same way under a real WSGI server as it does under
+`python app.py`.
+<!-- TODO once deployed: replace this line with the live URL and one
+    pasted curl against it, or say here that the Space build failed and
+    why, instead of deleting this section. -->
 
 **Instrumentation**
 
