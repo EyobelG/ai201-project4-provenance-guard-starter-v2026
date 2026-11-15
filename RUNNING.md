@@ -106,6 +106,8 @@ position.**
 | `python run_attacks.py --flood 15` | Push past your rate limit and print the status codes — **unit 8** |
 | `python run_eval.py --label before` | Your five criteria, three trials — **unit 8** |
 | `python run_batch_eval.py --label before` | The capstone `/batch` criteria, three trials — **unit 9** |
+| `python test_batch.py` | `/batch` criteria 1, 2, 3, 5 via `test_client()`, no live server — **unit 9** |
+| `python run_load_eval.py` | A `/batch` burst at ten times the daily rate, in one run — **unit 9 stretch** |
 
 ---
 

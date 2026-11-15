@@ -226,6 +226,19 @@ and `/verify` is logged through `audit.log_rejection` (`status: "rejected"`),
 not just returned to the caller — see the rejected entry in **Sample Run**'s
 log excerpt below.
 
+**`test_batch.py`** (added for the capstone) extends the same `test_client()`
+approach `test.py` already uses for `/ping` to `/batch` — criteria 1, 2, 3
+and 5 from `criteria.md`'s capstone section, as route-level assertions that
+run without a live server in another terminal. Criterion 4 (timing) stays
+in `run_batch_eval.py`, since a timing comparison against live HTTP
+overhead doesn't mean the same thing through the test client.
+
+```bash
+$ python test_batch.py
+```
+
+9 of 9 pass as of this submission.
+
 ---
 
 ## Sample Run
@@ -808,31 +821,55 @@ install; `/batch` is just another route on the same process.
 Every `/batch` item writes the same nine-plus-field entry `/submit` always
 has (`timestamp`, `content_id`, `creator_id`, `guess`, `model_score`,
 `style_score`, `combined_score`, `lexical_score`, `label`, `status`,
-`verified_human`), plus two fields added this unit: `duration_ms` (wall
-time of the three signals + scoring, timed with `time.perf_counter()` in
-`app.py::_score_and_log`) and `batch_id` (shared by every item from one
-`/batch` call, plus an `index`, so a batch's items can be found together).
+`verified_human`), plus `duration_ms` (wall time of the three signals +
+scoring, timed with `time.perf_counter()` in `app.py::_score_and_log`) and
+`batch_id` (shared by every item from one `/batch` call, plus an `index`,
+so a batch's items can be found together).
+
 A rejected item or request logs through `audit.log_rejection` with a
 `reason` instead of a decision — `app.py::batch`'s own validation, and
 `run_batch_eval.py`'s deliberately malformed scenarios, are what produced
-the rejections below.
+the rejections below. **Every rejection now carries `duration_ms` too**
+(time from the top of the route to the reject, passed through `_reject`'s
+new `started` parameter): an earlier pasted log had this on the three
+`decided` rows only, which hid that a rejection takes measurable time as
+well — usually near-zero, but a number, not an absence. The
+`DetectorUnavailable` branch in `/batch` (and in `/submit`) also now calls
+`audit.log_rejection` before answering; it didn't before, which meant that
+one specific failure mode showed up in the HTTP response but never in the
+log — exactly the "failure that shows up only as an absence" this
+project's own comments warn about elsewhere.
 
 Ten real entries from `logs/audit.jsonl`, pasted as-is (three decided, then
 seven rejected — including the two kinds of failed request this unit's
 testing produced):
 
 ```json
-{"timestamp": "2026-11-12T03:05:14+00:00", "content_id": "ff578aca-ab77-4d1f-9979-e9e510e1b3ad", "creator_id": "batcheval_5", "guess": "unsure", "model_score": 0.6169, "style_score": 0.3783, "combined_score": 0.5901, "label": "We can't tell confidently whether a person or an AI wrote this. That's not a strike against you — if you wrote it yourself, you're welcome to appeal so a person can take a closer look.", "status": "decided", "lexical_score": 0.9005, "verified_human": false, "duration_ms": 56.6, "batch_id": "9594d5a9-27fe-4059-8d6a-67c9f0b667f4", "index": 4}
-{"timestamp": "2026-11-12T03:05:14+00:00", "content_id": "6e916a9e-8202-4c40-9948-384c8f4de1b9", "creator_id": "batcheval_6", "guess": "unsure", "model_score": 0.416, "style_score": 0.5735, "combined_score": 0.5542, "label": "We can't tell confidently whether a person or an AI wrote this. That's not a strike against you — if you wrote it yourself, you're welcome to appeal so a person can take a closer look.", "status": "decided", "lexical_score": 0.8316, "verified_human": false, "duration_ms": 41.5, "batch_id": "9594d5a9-27fe-4059-8d6a-67c9f0b667f4", "index": 5}
-{"timestamp": "2026-11-12T03:05:14+00:00", "content_id": "8928b8fd-6083-4bf9-b287-4f8c43c0bfac", "creator_id": "batcheval_7", "guess": "unsure", "model_score": 0.3859, "style_score": 0.5833, "combined_score": 0.5318, "label": "We can't tell confidently whether a person or an AI wrote this. That's not a strike against you — if you wrote it yourself, you're welcome to appeal so a person can take a closer look.", "status": "decided", "lexical_score": 0.7699, "verified_human": false, "duration_ms": 42.8, "batch_id": "9594d5a9-27fe-4059-8d6a-67c9f0b667f4", "index": 6}
-{"timestamp": "2026-11-12T03:05:14+00:00", "creator_id": "batcheval_bad_1", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "'text' is required and must be a non-empty string.", "batch_id": "9594d5a9-27fe-4059-8d6a-67c9f0b667f4", "index": 7}
-{"timestamp": "2026-11-12T03:05:14+00:00", "creator_id": "batcheval_bad_2", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "'text' is required and must be a non-empty string.", "batch_id": "9594d5a9-27fe-4059-8d6a-67c9f0b667f4", "index": 8}
-{"timestamp": "2026-11-12T03:05:14+00:00", "creator_id": "batcheval_bad_3", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "'text' is required and must be a non-empty string.", "batch_id": "9594d5a9-27fe-4059-8d6a-67c9f0b667f4", "index": 9}
-{"timestamp": "2026-11-12T03:05:14+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "Batch of 30 items exceeds the 20-item limit."}
-{"timestamp": "2026-11-12T03:05:14+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "bad_batch_item", "message": "Item must be a JSON object.", "batch_id": "baa52e42-db98-41e5-a0d1-d8377201a8b1", "index": 0}
-{"timestamp": "2026-11-12T03:05:14+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "'items' is required and must be a non-empty JSON array."}
-{"timestamp": "2026-11-12T03:05:14+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "'items' is required and must be a non-empty JSON array."}
+{"timestamp": "2026-11-15T23:45:08+00:00", "content_id": "9481f99b-8cab-4e15-a9da-2121517c6af8", "creator_id": "batcheval_5", "guess": "unsure", "model_score": 0.6169, "style_score": 0.3783, "combined_score": 0.5901, "label": "We can't tell confidently whether a person or an AI wrote this. That's not a strike against you — if you wrote it yourself, you're welcome to appeal so a person can take a closer look.", "status": "decided", "lexical_score": 0.9005, "verified_human": false, "duration_ms": 87.9, "model_ms": 87.3, "style_ms": 0.3, "lexical_ms": 0.0, "scoring_ms": 0.1, "batch_id": "926291c0-c0a5-414c-a049-29d09eb96cca", "index": 4}
+{"timestamp": "2026-11-15T23:45:08+00:00", "content_id": "f6454430-e5b6-408c-aee0-a193316b0843", "creator_id": "batcheval_6", "guess": "unsure", "model_score": 0.416, "style_score": 0.5735, "combined_score": 0.5542, "label": "We can't tell confidently whether a person or an AI wrote this. That's not a strike against you — if you wrote it yourself, you're welcome to appeal so a person can take a closer look.", "status": "decided", "lexical_score": 0.8316, "verified_human": false, "duration_ms": 79.9, "model_ms": 78.9, "style_ms": 0.4, "lexical_ms": 0.4, "scoring_ms": 0.1, "batch_id": "926291c0-c0a5-414c-a049-29d09eb96cca", "index": 5}
+{"timestamp": "2026-11-15T23:45:09+00:00", "content_id": "88de0737-f86f-4d74-870b-fe4b7f2c31ec", "creator_id": "batcheval_7", "guess": "unsure", "model_score": 0.3859, "style_score": 0.5833, "combined_score": 0.5318, "label": "We can't tell confidently whether a person or an AI wrote this. That's not a strike against you — if you wrote it yourself, you're welcome to appeal so a person can take a closer look.", "status": "decided", "lexical_score": 0.7699, "verified_human": false, "duration_ms": 98.1, "model_ms": 97.8, "style_ms": 0.1, "lexical_ms": 0.0, "scoring_ms": 0.1, "batch_id": "926291c0-c0a5-414c-a049-29d09eb96cca", "index": 6}
+{"timestamp": "2026-11-15T23:45:09+00:00", "creator_id": "batcheval_bad_1", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "'text' is required and must be a non-empty string.", "batch_id": "926291c0-c0a5-414c-a049-29d09eb96cca", "index": 7, "duration_ms": 0.0}
+{"timestamp": "2026-11-15T23:45:09+00:00", "creator_id": "batcheval_bad_2", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "'text' is required and must be a non-empty string.", "batch_id": "926291c0-c0a5-414c-a049-29d09eb96cca", "index": 8, "duration_ms": 0.0}
+{"timestamp": "2026-11-15T23:45:09+00:00", "creator_id": "batcheval_bad_3", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "'text' is required and must be a non-empty string.", "batch_id": "926291c0-c0a5-414c-a049-29d09eb96cca", "index": 9, "duration_ms": 0.0}
+{"timestamp": "2026-11-15T23:45:09+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "Batch of 30 items exceeds the 20-item limit.", "duration_ms": 0.1}
+{"timestamp": "2026-11-15T23:45:09+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "bad_batch_item", "message": "Item must be a JSON object.", "batch_id": "17661b33-a457-460a-bded-e7ce71c4e63d", "index": 0, "duration_ms": 0.0}
+{"timestamp": "2026-11-15T23:45:09+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "'items' is required and must be a non-empty JSON array.", "duration_ms": 0.0}
+{"timestamp": "2026-11-15T23:45:09+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "bad_request", "message": "'items' is required and must be a non-empty JSON array.", "duration_ms": 0.0}
 ```
+
+**Latency breakdown (stretch).** The three decided rows above also carry
+`model_ms`, `style_ms`, `lexical_ms` and `scoring_ms` — each signal timed on
+its own inside `_score_and_log`, added this pass specifically to answer
+"which stage actually costs the money." Across the 1,087 `decided` entries
+in the current `logs/audit.jsonl`: `model_ms` median **52.7ms**, mean
+64.5ms; `style_ms`, `lexical_ms` and `scoring_ms` are each a **median of
+0.0ms**, meaning the two cheaper signals and the combining step together
+account for well under 1% of a submission's cost. The entire per-item
+latency story in this project is signal one, the model forward pass —
+signal two and three are effectively free by comparison. That also means
+the 20%-overhead bound in criterion 4 is really a bound on how much Flask
+request/response handling and JSON work add on top of one GPT-2 forward
+pass, not on anything the style or lexical signals do.
 
 **What It Costs**
 
@@ -853,9 +890,13 @@ number of HTTP round trips, not the number of model calls.
 
 **Run Log and Verdicts**
 
-Three trials each, before and after the fix below. "Target" is the
-20%-overhead bound from criterion 4; the other four criteria are pass/fail
-as written in `criteria.md`.
+Three trials each, before and after the fix below. "Target" is a
+per-trial bound — 20% over that trial's own solo per-item time, since the
+solo baseline itself drifts slightly run to run; the other four criteria
+are pass/fail as written in `criteria.md`. All five criteria's raw output
+for every trial lives in the two files named below, not only criterion 4's
+— the JSON blocks hold keys `1_and_4`, `2`, `3` and `5`, one per criterion,
+inside each trial.
 
 *Before* (`results/batch_run_2026-11-11_2203_before.md`):
 
@@ -864,13 +905,16 @@ as written in `criteria.md`.
 | 1. Batch correctness | 10/10 match, 3/3 trials | 10/10 | 10/10 | 10/10 | MET |
 | 2. Partial-failure isolation | 7 decided + 3 errors, 0×500 | 7/3 | 7/3 | 7/3 | MET |
 | 3. Batch size cap | 400, nothing processed | 400 | 400 | 400 | MET |
-| 4. Batching overhead ≤20% | 814.8ms vs 63.7ms target | 50.6 vs 63.2 | 46.5 vs 55.4 | — | **MISSED** |
+| 4. Batching overhead ≤20% | per-trial bound | 814.8 vs 63.7 | 50.6 vs 63.2 | 46.5 vs 55.4 | **MISSED** |
 | 5. Malformed batch shapes (revised) | 400/400 | 400/400 | 400/400 | 400/400 | MET |
 
-(Criterion 4's row: trial 1 came in at 814.8ms/item against a 63.7ms
-target — a 1,180% overage; trials 2 and 3 were already fine at 50.6ms and
-46.5ms. The target has to hold across all three trials, so this is a
-miss.)
+(An earlier version of this table had trial 1's numbers sitting in the
+Target column and no entry at all for trial 3 — a transcription error, not
+a second run. The numbers above are read directly back out of the three
+JSON blocks in the file: trial 1 came in at 814.8ms/item against a 63.7ms
+target — a 1,180% overage; trials 2 and 3 were already fine at 50.6ms
+against 63.2ms and 46.5ms against 55.4ms. The target has to hold across
+all three trials, so this is a miss.)
 
 *After* (`results/batch_run_2026-11-11_2205_after.md`):
 
@@ -880,6 +924,20 @@ miss.)
 | 2. Partial-failure isolation | 7 decided + 3 errors, 0×500 | 7/3 | 7/3 | 7/3 | MET |
 | 3. Batch size cap | 400, nothing processed | 400 | 400 | 400 | MET |
 | 4. Batching overhead ≤20% | per-trial bound | 53.0 vs 64.5 | 51.9 vs 64.4 | 54.9 vs 59.6 | **MET** |
+| 5. Malformed batch shapes (revised) | 400/400 | 400/400 | 400/400 | 400/400 | MET |
+
+*Re-check, after the logging and startup-warm-up fixes below*
+(`results/batch_run_2026-11-15_1845_recheck.md`) — same five criteria, run
+again once the audit-log gaps and the real cold-start fix (not just the
+test harness's own warm-up call) were in place, to confirm neither changed
+any verdict:
+
+| Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
+|---|---|---|---|---|---|
+| 1. Batch correctness | 10/10 match, 3/3 trials | 10/10 | 10/10 | 10/10 | MET |
+| 2. Partial-failure isolation | 7 decided + 3 errors, 0×500 | 7/3 | 7/3 | 7/3 | MET |
+| 3. Batch size cap | 400, nothing processed | 400 | 400 | 400 | MET |
+| 4. Batching overhead ≤20% | per-trial bound | 68.9 vs 84.5 | 61.4 vs 74.0 | 59.3 vs 74.0 | **MET** |
 | 5. Malformed batch shapes (revised) | 400/400 | 400/400 | 400/400 | 400/400 | MET |
 
 Real output, trial 1 of the before run, criterion 4 (pasted from
@@ -910,6 +968,72 @@ this design that happened to always be the batch call.
 (`run_batch_eval.py`, ~8 lines). Re-ran with `--label after`: all three
 trials of criterion 4 now land within the 20% bound (table above). No
 other criterion changed.
+
+**A Second Improvement**
+
+**Diagnosis:** the fix above only changed how the *test* measured the
+system — `run_batch_eval.py` warms the model before timing starts, but
+`app.py` itself still lazily loads the model on whichever real HTTP
+request happens to arrive first. A real caller, not a test harness, would
+be the one who pays the ~7.6s cold start. This is exactly the gap this
+unit's own grading feedback named: "ask yourself whether a fix changes the
+system or only how you observe it." It didn't, yet.
+
+**Fix:** `app.py::main` now calls `detector.warm_up()` once at startup,
+before `app.run()` opens the port, so the model is loaded before any
+caller can reach it (`app.py`, ~8 lines). `detector.py::warm_up` also
+changed — it was only calling `_load()`, which loads the model weights but
+never runs a forward pass, so the *next* real call still paid for
+PyTorch's own first-call kernel/thread-pool init on top of the (already
+loaded) weights. `warm_up()` now also runs one throwaway `perplexity(...)`
+call, which is the actual code path a real submission takes.
+
+**Measured, same machine, same model, nothing else running:**
+
+| | First real `/submit` after a fresh start |
+|---|---|
+| Before (no startup warm-up) | **7,855.8 ms** |
+| After (startup warm-up, `_load()` only) | 2,799.9 ms — weights loaded, forward pass still cold |
+| After (startup warm-up + one forward pass) | **90.9 ms** |
+
+The middle row is itself a finding: loading the weights is not the same
+thing as being warm. Measuring `_load()`-only warm-up made that visible —
+the forward-pass-shaped fix only showed up as necessary once the smaller
+fix was tried and still left a 30x–60x gap over the ~50ms steady-state
+cost. The cost moves, it doesn't disappear: the ~7.6s now happens once, in
+the terminal running `python app.py`, before anyone can send it a request,
+instead of landing on whichever caller is first in line.
+
+**Load Observation**
+
+Run: `run_load_eval.py` against a freshly started, freshly warmed server —
+100 `/batch` calls of 10 items each, back to back, as fast as the client
+could send them: **1,000 scored items**, ten times this project's own
+"100 submissions/day" cost arithmetic above, in one continuous burst
+instead of spread across a day
+(`results/load_run_2026-11-15_1847.md`).
+
+| | |
+|---|---|
+| Items/sec sustained | 17.5 |
+| Per-item `duration_ms`, median | ~53ms — matches the single-request baseline |
+| Per-item `duration_ms`, mean | 56.7ms |
+| First-half mean vs second-half mean | 59.7ms vs 53.8ms — no upward drift |
+| Max | 2,700.8ms — one item, 1 of 1,000 |
+
+No degradation under sustained load: the first and second halves of the
+burst average within 6ms of each other, so there's no memory growth or
+thread contention building up over 1,000 items. There is one real
+anomaly worth naming rather than hiding: item 1 of the burst spiked to
+2,700.8ms — all of it in `model_ms`, confirmed in `logs/audit.jsonl`
+(`model_ms: 2699.9` on that entry) — on an otherwise fully warmed server,
+with every other item in the run under 120ms. **I don't have a diagnosis
+for this one.** It isn't the cold-start bug above (the model was already
+warm and had already been used for the recheck run earlier in this
+session) and it isn't a drift pattern (nothing else in the burst was
+slow). My best guess is OS-level scheduling jitter — something else on
+this laptop briefly took the CPU — but I haven't confirmed that, and I'd
+rather say so than invent a mechanism I didn't actually trace.
 
 **What's Still Broken**
 
