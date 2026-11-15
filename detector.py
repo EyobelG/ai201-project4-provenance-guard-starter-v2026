@@ -136,8 +136,17 @@ def model_signal(text: str) -> float:
 
 
 def warm_up() -> str:
-    """Load the model without scoring anything. Run this before class."""
+    """
+    Load the model AND run one throwaway forward pass.
+
+    Loading the weights isn't the whole cold start: the first real call to
+    `model(...)` also pays for PyTorch's own lazy kernel/thread-pool init,
+    which `_load()` alone doesn't touch. Skip the forward pass here and the
+    *next* caller — the first real `/submit` or `/batch` item — still eats
+    that cost, which is exactly the gap this function exists to close.
+    """
     _load()
+    perplexity("warm up.")
     return f"{config.DETECTOR_MODEL} loaded and ready."
 
 

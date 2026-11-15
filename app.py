@@ -61,13 +61,22 @@ def _require_string(payload: dict, field: str, max_chars: int | None = None):
     return value, None
 
 
-def _reject(message: str, creator_id: str = "unknown", **extra):
+def _elapsed_ms(started: float) -> float:
+    """Milliseconds since `started` (a `time.perf_counter()` reading)."""
+    return round((time.perf_counter() - started) * 1000, 1)
+
+
+def _reject(message: str, creator_id: str = "unknown", started: float | None = None, **extra):
     """
     A 400 that still leaves a trace in the audit log.
 
     Every rejection in this file goes through here — an attack that shows up
-    only as an absence is one nobody can diagnose later.
+    only as an absence is one nobody can diagnose later. `started`, when
+    passed, gets logged as `duration_ms` too — a rejection took time to reach,
+    even when there was no decision at the end of it.
     """
+    if started is not None:
+        extra.setdefault("duration_ms", _elapsed_ms(started))
     audit.log_rejection(creator_id=creator_id, reason="bad_request", message=message, **extra)
     return jsonify({"error": "bad_request", "message": message}), 400
 
@@ -76,6 +85,8 @@ def _raw_creator_id(payload: dict) -> str:
     """Best-effort creator_id for logging, even when it fails validation."""
     value = payload.get("creator_id")
     return value if isinstance(value, str) and value.strip() else "unknown"
+
+
 
 
 def _score_and_log(text: str, creator_id: str, **extra_log) -> dict:
@@ -91,18 +102,28 @@ def _score_and_log(text: str, creator_id: str, **extra_log) -> dict:
     started = time.perf_counter()
     content_id = str(uuid.uuid4())
 
+    t0 = time.perf_counter()
     model_score = detector.model_signal(text)
-    style_score = stylometry.style_signal(text)
-    lexical_score = lexical.lexical_signal(text)
+    model_ms = _elapsed_ms(t0)
 
+    t0 = time.perf_counter()
+    style_score = stylometry.style_signal(text)
+    style_ms = _elapsed_ms(t0)
+
+    t0 = time.perf_counter()
+    lexical_score = lexical.lexical_signal(text)
+    lexical_ms = _elapsed_ms(t0)
+
+    t0 = time.perf_counter()
     combined_score = scoring.combine_signals(model_score, style_score, lexical_score)
     guess, label = scoring.score_to_label(combined_score)
 
     verified_human = credential.is_verified(creator_id)
     if verified_human:
         label = f"{label} This writer holds a verified-human credential."
+    scoring_ms = _elapsed_ms(t0)
 
-    duration_ms = round((time.perf_counter() - started) * 1000, 1)
+    duration_ms = _elapsed_ms(started)
 
     audit.log_decision(
         content_id=content_id,
@@ -116,6 +137,10 @@ def _score_and_log(text: str, creator_id: str, **extra_log) -> dict:
         lexical_score=lexical_score,
         verified_human=verified_human,
         duration_ms=duration_ms,
+        model_ms=model_ms,
+        style_ms=style_ms,
+        lexical_ms=lexical_ms,
+        scoring_ms=scoring_ms,
         **extra_log,
     )
 
@@ -129,6 +154,10 @@ def _score_and_log(text: str, creator_id: str, **extra_log) -> dict:
         "lexical_score": lexical_score,
         "verified_human": verified_human,
         "duration_ms": duration_ms,
+        "model_ms": model_ms,
+        "style_ms": style_ms,
+        "lexical_ms": lexical_ms,
+        "scoring_ms": scoring_ms,
     }
 
 
@@ -297,26 +326,29 @@ def submit():
     what should this do when `text` is missing, empty, or enormous? A crash on
     a malformed input is one of the most common real failures there is.
     """
+    started = time.perf_counter()
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
-        return _reject("Request body must be a JSON object.")
+        return _reject("Request body must be a JSON object.", started=started)
 
     log_creator_id = _raw_creator_id(payload)
 
     text, text_err = _require_string(payload, "text", max_chars=config.MAX_TEXT_CHARS)
     if text_err:
-        return _reject(text_err, creator_id=log_creator_id)
+        return _reject(text_err, creator_id=log_creator_id, started=started)
 
     creator_id, creator_err = _require_string(payload, "creator_id")
     if creator_err:
-        return _reject(creator_err, creator_id=log_creator_id)
+        return _reject(creator_err, creator_id=log_creator_id, started=started)
 
     try:
         result = _score_and_log(text, creator_id)
     except detector.DetectorUnavailable as exc:
+        audit.log_rejection(creator_id=creator_id, reason="detector_unavailable",
+                            message=str(exc), duration_ms=_elapsed_ms(started))
         return jsonify({"error": "detector_unavailable", "message": str(exc)}), 503
     except ValueError as exc:
-        return _reject(str(exc), creator_id=creator_id)
+        return _reject(str(exc), creator_id=creator_id, started=started)
 
     return jsonify(result)
 
@@ -390,27 +422,32 @@ def batch():
     Every item shares a `batch_id` in the audit log so the calls that
     belonged to one batch can be found together later.
     """
+    started = time.perf_counter()
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
-        return _reject("Request body must be a JSON object.")
+        return _reject("Request body must be a JSON object.", started=started)
 
     items = payload.get("items")
     if not isinstance(items, list) or not items:
-        return _reject("'items' is required and must be a non-empty JSON array.")
+        return _reject("'items' is required and must be a non-empty JSON array.", started=started)
 
     if len(items) > config.MAX_BATCH_ITEMS:
         return _reject(
-            f"Batch of {len(items)} items exceeds the {config.MAX_BATCH_ITEMS}-item limit."
+            f"Batch of {len(items)} items exceeds the {config.MAX_BATCH_ITEMS}-item limit.",
+            started=started,
         )
 
     batch_id = str(uuid.uuid4())
     results = []
 
     for index, item in enumerate(items):
+        item_started = time.perf_counter()
+
         if not isinstance(item, dict):
             message = "Item must be a JSON object."
             audit.log_rejection(creator_id="unknown", reason="bad_batch_item",
-                                message=message, batch_id=batch_id, index=index)
+                                message=message, batch_id=batch_id, index=index,
+                                duration_ms=_elapsed_ms(item_started))
             results.append({"index": index, "error": "bad_request", "message": message})
             continue
 
@@ -419,25 +456,31 @@ def batch():
         text, text_err = _require_string(item, "text", max_chars=config.MAX_TEXT_CHARS)
         if text_err:
             audit.log_rejection(creator_id=log_creator_id, reason="bad_request",
-                                message=text_err, batch_id=batch_id, index=index)
+                                message=text_err, batch_id=batch_id, index=index,
+                                duration_ms=_elapsed_ms(item_started))
             results.append({"index": index, "error": "bad_request", "message": text_err})
             continue
 
         creator_id, creator_err = _require_string(item, "creator_id")
         if creator_err:
             audit.log_rejection(creator_id=log_creator_id, reason="bad_request",
-                                message=creator_err, batch_id=batch_id, index=index)
+                                message=creator_err, batch_id=batch_id, index=index,
+                                duration_ms=_elapsed_ms(item_started))
             results.append({"index": index, "error": "bad_request", "message": creator_err})
             continue
 
         try:
             result = _score_and_log(text, creator_id, batch_id=batch_id, index=index)
         except detector.DetectorUnavailable as exc:
+            audit.log_rejection(creator_id=creator_id, reason="detector_unavailable",
+                                message=str(exc), batch_id=batch_id, index=index,
+                                duration_ms=_elapsed_ms(item_started))
             results.append({"index": index, "error": "detector_unavailable", "message": str(exc)})
             continue
         except ValueError as exc:
             audit.log_rejection(creator_id=creator_id, reason="bad_request",
-                                message=str(exc), batch_id=batch_id, index=index)
+                                message=str(exc), batch_id=batch_id, index=index,
+                                duration_ms=_elapsed_ms(item_started))
             results.append({"index": index, "error": "bad_request", "message": str(exc)})
             continue
 
@@ -525,6 +568,17 @@ def main():
     print(f"  rate limiting:   {'ON' if config.RATE_LIMITING_ENABLED else 'off (unit 8)'}")
     print(f"  audit log:       {config.AUDIT_LOG}")
     print()
+
+    # Unit 9 capstone fix: load the model here, before the first request,
+    # instead of letting whichever caller arrives first pay the ~550MB load.
+    # Moving the warm-up from the test harness (run_batch_eval.py) into the
+    # service itself is the difference between fixing the system and only
+    # fixing how it's measured.
+    print("warming up the detector model...")
+    t0 = time.perf_counter()
+    print(f"  {detector.warm_up()} ({_elapsed_ms(t0)} ms)")
+    print()
+
     print("Check it's alive:")
     print(f'  curl -X POST http://{config.HOST}:{config.PORT}/ping \\')
     print('    -H "Content-Type: application/json" \\')
