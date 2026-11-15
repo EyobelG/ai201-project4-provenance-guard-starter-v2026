@@ -25,6 +25,7 @@ Routes:
     GET  /health      is the service up, and is the model loaded
 """
 
+import os
 import time
 import uuid
 
@@ -39,6 +40,15 @@ import scoring
 import stylometry
 
 app = Flask(__name__)
+
+# Path A hosting (Unit 9 stretch): a production server runs `app:app` under
+# gunicorn with `--preload`, which imports this module in gunicorn's master
+# process before forking workers — `main()` below, and its warm-up call,
+# never execute. This is the production equivalent of that same warm-up,
+# gated behind an env var so `python app.py`, test.py and test_batch.py keep
+# their normal (fast-unless-you-hit-a-route) local behavior.
+if os.getenv("AI201_PRELOAD_WARMUP") == "1":
+    detector.warm_up()
 
 
 # ── Shared request-validation helpers ─────────────────────────────────────────
