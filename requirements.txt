@@ -16,6 +16,14 @@ requests>=2.31,<3.0
 transformers>=4.44,<5.0
 
 # transformers needs a backend. CPU-only is fine — nothing here trains.
+#
+# The extra index below matters on Linux: PyPI's default torch wheel for
+# linux_x86_64 bundles full CUDA support (10+ GB of nvidia-cuda-* packages),
+# even though detector.py never calls .cuda(). Found deploying to a Linux
+# host (Unit 9 capstone, Path A attempt) — the CPU-only wheel from PyTorch's
+# own index is a fraction of the size and installs faster, with no change
+# in behavior since nothing here uses a GPU either way.
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.2,<3.0
 
 # A real server for the service — UNIT 9. Unused before then; Flask's built-in

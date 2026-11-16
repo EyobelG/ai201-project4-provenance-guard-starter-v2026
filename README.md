@@ -866,20 +866,49 @@ trying, not by reading a pricing page:
 A third candidate, Koyeb, was checked next: as of this writeup it no
 longer has a free tier at all — its pricing page starts at pay-per-use
 from the first second, no sandbox/free option — so it was ruled out
-without even an attempt. Render's free tier is the same 512MB
-`RUNNING.md` already ruled out; Fly.io, Railway, Oracle Cloud, and GCP
-all require a card just to create an account, which is the same
-category of blocker as HF's Docker tier.
+without even an attempt.
+
+A fourth, Render, was actually tried rather than ruled out on arithmetic
+alone, since its free tier (no card) is real and its build auto-detects
+this repo's `Dockerfile`. Two things came out of it:
+
+- **A real bug, found only by trying it:** `requirements.txt` pins
+  `torch>=2.2,<3.0` with no index restriction, so a clean `pip install`
+  on a generic Linux x86_64 box resolves to the full **CUDA** build —
+  10+ GB of `nvidia-cuda-*` wheels — not the CPU-only one, even though
+  this detector never calls `.cuda()`. That's wasted build time and
+  image size on any host, not just this one.
+- **The predicted failure, confirmed rather than assumed:** once
+  deployed, the container failed with Render's own message: *"Ran out
+  of memory (used over 512MB) while running your code."* That's
+  `RUNNING.md`'s arithmetic, independently verified by an actual OOM
+  kill rather than taken on faith. Fixing the CUDA-wheel bug wouldn't
+  have changed this outcome — `RUNNING.md`'s own low estimate (200MB
+  torch + 550MB weights = 750MB) is already over 512MB with or without
+  CUDA; the bug cost build time, not the memory ceiling.
+
+Fly.io, Railway, Oracle Cloud, and GCP all require a card just to create
+an account, which is the same category of blocker as HF's Docker tier,
+so none were attempted.
 
 **Why this counts as the attempt, not a shortcut:** `RUNNING.md`'s
-original claim was "no free host fits because of memory." That's now
-shown to be narrower than it was written — HF's free CPU/ZeroGPU tier
-does have the RAM — but it still doesn't run this service for free,
-for two reasons that have nothing to do with memory. The honest updated
-claim is: *no free, no-card host I found can run this specific
-dependency stack right now.* That's a different, more precise claim than
-the one `RUNNING.md` made, found by trying Path A rather than only doing
-the arithmetic on it.
+original claim was "no free host fits because of memory." Render's
+result shows that claim was right all along, for exactly the reason
+given — but the other two hosts show it wasn't the *only* reason a free
+deployment can fail. The honest updated claim is: *no free, no-card host
+I found can run this specific service right now* — one blocked by
+memory exactly as predicted, two blocked by billing and a dependency
+conflict that have nothing to do with memory at all. That's a more
+complete picture than the one `RUNNING.md` made, found by trying Path A
+three ways rather than only doing the arithmetic once.
+
+A fifth option was raised and deliberately not attempted: quantizing
+the model (int8) or exporting it to ONNX Runtime could plausibly shrink
+the footprint under 512MB. It wasn't attempted because it isn't a
+deployment change — it's a change to the detector itself, hours before
+a deadline, with real risk of quietly shifting scores near a threshold
+boundary and invalidating criteria from units 7 and 8 that are already
+correct. That's a worse trade than holding the stretch point.
 
 **Instrumentation**
 
