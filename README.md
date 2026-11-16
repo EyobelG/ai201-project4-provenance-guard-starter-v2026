@@ -828,20 +828,58 @@ Path B — local, with logs. Same command as every unit before this one:
 `python app.py`, documented in [RUNNING.md](RUNNING.md). Nothing new to
 install; `/batch` is just another route on the same process.
 
-**Path A, attempted:** `Dockerfile` targets Hugging Face Spaces' free CPU
-tier (SDK "Docker"), running `gunicorn app:app --preload` instead of
-Flask's dev server, per `RUNNING.md`'s own instructions for running this
-somewhere else. `--preload` imports `app.py` in gunicorn's master process
-before forking workers, which skips `app.py::main()` entirely — so the
-startup warm-up from "A Second Improvement" above is gated behind
-`AI201_PRELOAD_WARMUP=1` (set in the `Dockerfile`) so it still runs there.
-Smoke-tested locally under `gunicorn --preload`: first request after
-startup measured **102.9ms**, not the ~7.9s cold start — confirming the
-warm-up works the same way under a real WSGI server as it does under
-`python app.py`.
-<!-- TODO once deployed: replace this line with the live URL and one
-    pasted curl against it, or say here that the Space build failed and
-    why, instead of deleting this section. -->
+**Path A, attempted and blocked — two separate dead ends, not one:**
+
+`Dockerfile` targets Hugging Face Spaces' free CPU tier (SDK "Docker"),
+running `gunicorn app:app --preload` instead of Flask's dev server, per
+`RUNNING.md`'s own instructions for running this somewhere else.
+`--preload` imports `app.py` in gunicorn's master process before forking
+workers, which skips `app.py::main()` entirely — so the startup warm-up
+from "A Second Improvement" above is gated behind `AI201_PRELOAD_WARMUP=1`
+(set in the `Dockerfile`) so it still runs there. Smoke-tested locally
+under `gunicorn --preload`: first request after startup measured
+**102.9ms**, not the ~7.9s cold start — confirming the warm-up works the
+same way under a real WSGI server as it does under `python app.py`.
+
+That's as far as it got. Two independent blockers, found by actually
+trying, not by reading a pricing page:
+
+1. **Docker Spaces need billing on file to even build.** Not a card
+   verification — HF's own tooltip: *"Add billing to your account
+   (credits or subscribe to PRO) to unlock Docker Spaces."* Either option
+   is a real purchase, before any paid hardware is ever selected. I
+   stopped here rather than pay for a stretch point on a graded project.
+2. **The free, no-card alternative (Gradio SDK, which still runs CPU
+   Basic / ZeroGPU hardware) hits an unrelated, unresolvable dependency
+   conflict.** Selecting Gradio as the SDK force-installs
+   `gradio[oauth,mcp]==6.32.0` into the same environment as this
+   project's `requirements.txt`, regardless of whether `app.py` imports
+   gradio at all. `gradio==6.32.0` requires `huggingface-hub>=1.16.0`;
+   every current `transformers` release (4.44 through 4.57) requires
+   `huggingface-hub<1.0`. Pip's resolver fails with `ResolutionImpossible`
+   — full log at
+   [huggingface.co/spaces/eyobelg/provenance-guard](https://huggingface.co/spaces/eyobelg/provenance-guard?logs=build).
+   No version pin in this repo's own `requirements.txt` fixes this; it's
+   gradio and transformers disagreeing with each other, upstream, right
+   now, independent of this project's code.
+
+A third candidate, Koyeb, was checked next: as of this writeup it no
+longer has a free tier at all — its pricing page starts at pay-per-use
+from the first second, no sandbox/free option — so it was ruled out
+without even an attempt. Render's free tier is the same 512MB
+`RUNNING.md` already ruled out; Fly.io, Railway, Oracle Cloud, and GCP
+all require a card just to create an account, which is the same
+category of blocker as HF's Docker tier.
+
+**Why this counts as the attempt, not a shortcut:** `RUNNING.md`'s
+original claim was "no free host fits because of memory." That's now
+shown to be narrower than it was written — HF's free CPU/ZeroGPU tier
+does have the RAM — but it still doesn't run this service for free,
+for two reasons that have nothing to do with memory. The honest updated
+claim is: *no free, no-card host I found can run this specific
+dependency stack right now.* That's a different, more precise claim than
+the one `RUNNING.md` made, found by trying Path A rather than only doing
+the arithmetic on it.
 
 **Instrumentation**
 
